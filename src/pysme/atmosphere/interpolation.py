@@ -7,6 +7,7 @@ import numpy as np
 from astropy import constants as const
 from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit
+from scipy.interpolate import RBFInterpolator
 
 from ..abund import Abund
 from ..large_file_storage import setup_atmo
@@ -23,6 +24,213 @@ g_sun = (const.G * const.M_sun / const.R_sun ** 2).to_value("cm/s**2")
 logg_sun = np.log10(g_sun)
 
 
+class RbfGrid:
+    """
+    Precomputed data needed to interpolate model atmospheres from a grid via
+    radial basis functions (RBF), as an alternative to pysme's default
+    corner-model interpolation. Built once per atmosphere grid and reused for
+    every subsequent RBF interpolation query against that grid.
+    """
+
+    # Relative weights used to rescale Teff/logg/[M/H] onto a shared step size before
+    # nearest-neighbor search, so that neighbors are preferentially chosen close in Teff,
+    # next in [M/H], and least strictly in logg when grid spacing would otherwise tie them.
+    _TEFF_WEIGHT = 9
+    _LOGG_WEIGHT = 11
+    _MET_WEIGHT = 10
+
+    # Number of nearest grid points used to build the local RBF interpolant.
+    # WARNING: this was tuned empirically (trial and error against real atmosphere grids),
+    # balancing interpolation accuracy against runtime cost. Do not change it casually:
+    # too few neighbors can make the interpolated atmosphere inaccurate or discontinuous,
+    # while too many can make RBFInterpolator's linear solve extremely slow (its cost grows
+    # steeply with neighbor count) -- capable of hanging for hours on realistic grids.
+    # Re-validate against a known grid before changing this value.
+    _RBF_NEIGHBORS = 64
+
+    def __init__(self, sav_grid, geometry):
+        """
+        Precompute everything needed to interpolate model atmospheres from
+        ``sav_grid`` via radial basis functions: rescaled grid coordinates for
+        nearest-neighbor lookup, which fields to interpolate, the common depth
+        length, and the flattened array of grid values the RBF interpolant is
+        fit to.
+
+        Parameters
+        ----------
+        sav_grid : AtmosphereGrid
+            Grid of precomputed model atmospheres to interpolate between.
+        geometry : {"PP", "SPH"}
+            Geometry of the atmosphere models. Only used to decide whether
+            "height" and "radius" participate in the interpolation (spherical
+            models only).
+
+        Raises
+        ------
+        AtmosphereError
+            If ``sav_grid`` is not an AtmosphereGrid.
+        """
+        # Set by self.initialize_gridpoints():
+        self.teffs = None   # Scaled to have standard step size, used for finding neighbors in interpolation step
+        self.loggs = None
+        self.mets = None
+        self.grid_teffs = None # Not scaled, same as in sav_grid
+        self.grid_loggs = None
+        self.grid_mets = None
+        self.teff_step_scale = 1.0 # to convert between teffs and grid_teffs
+        self.logg_step_scale = 1.0
+        self.met_step_scale = 1.0
+        self.gridpoints = None
+        # set by self.initialize_tags():
+        self.vtags = None
+        self.stags = None
+        # Set by self.initialize_depth():
+        self.depthpoints = None
+        # Set by self.read_in_grid():
+        self.array_for_interpol = None # Combines all vectors and scalars for interpolation
+        # Set by self.build_interpolator():
+        self.interpolator = None # Cached RBFInterpolator, built once and reused across queries
+
+        if not isinstance(sav_grid, AtmosphereGrid):
+            raise AtmosphereError("Rbf initialization was requested but no sav-grid was provided")
+
+        self.initialize_gridpoints(sav_grid) # read in and scale teff, logg, and metallicity of the grid
+        self.vtags, self.stags = self.initialize_tags(sav_grid, geometry) # Check if e.g. height and radius are used
+        self.depthpoints = self.initialize_depth(sav_grid) # Set self.depthpoints
+        self.read_in_grid(sav_grid) # Stores all data in self.array_for_interpol
+        self.interpolator = self.build_interpolator()
+
+    def build_interpolator(self):
+        """Build the RBFInterpolator over the whole grid, once, for reuse across queries."""
+        grid_points = np.vstack((self.teffs, self.loggs, self.mets)).T
+        return RBFInterpolator(grid_points, self.array_for_interpol, neighbors=self._RBF_NEIGHBORS)
+
+    def to_interp_space_vector(self, vtag, values, atmo):
+        """
+        Map a grid vector quantity (e.g. temp, rhox, height) into the space the
+        RBF interpolant operates in. Everything is interpolated in log space;
+        "height" is additionally combined with "radius" first (see
+        ``from_interp_space_vector`` for the inverse transform).
+        """
+        values = np.asarray(values)
+        if vtag == "height":
+            return np.log10(values+atmo["radius"]) # combine height and radius for the interpolation
+        return np.log10(values)
+
+    def to_interp_space_scalar(self, stag, value):
+        """Map a grid scalar quantity (e.g. teff, logg, radius) into the space the RBF interpolant operates in."""
+        if stag == "radius":
+            return np.log10(value)
+        return value
+
+
+    def initialize_gridpoints(self, sav_grid):
+        """
+        Read the (teff, logg, [M/H]) coordinate of every grid point in
+        ``sav_grid`` and rescale each axis (via ``_TEFF_WEIGHT``,
+        ``_LOGG_WEIGHT``, ``_MET_WEIGHT``) onto a common step size, so nearest
+        neighbors can be found with a plain Euclidean distance in
+        ``build_interpolator``. Sets ``self.grid_teffs``/``grid_loggs``/``grid_mets``
+        (unscaled) and ``self.teffs``/``loggs``/``mets`` (scaled).
+        """
+        # Pull out all gridpoint parameters from sav_grid
+        temp_teffs = np.array(sorted(np.unique(sav_grid['teff'])))
+        temp_loggs = np.array(sorted(np.unique(sav_grid['logg'])))
+        grid_teffs, grid_loggs, grid_mets = [], [], [] 
+        for t in temp_teffs:
+            for l in temp_loggs:
+                preselection = sav_grid[(sav_grid['teff'] == t) & (sav_grid['logg'] == l)]
+                available_mets = np.unique(preselection['monh'])
+                for m in available_mets:
+                    grid_teffs.append(t)
+                    grid_loggs.append(l)
+                    grid_mets.append(m)
+        self.grid_teffs = np.array(grid_teffs)
+        self.grid_loggs = np.array(grid_loggs)
+        self.grid_mets = np.array(grid_mets)
+
+        # Scale s.t. all step sizes match, except for a slight scaling that will prefer teff over met over logg steps when all would otherwise be equidistant
+        teff_step_original = np.min(abs(temp_teffs[1:] - temp_teffs[:-1])) 
+        logg_step_original = np.min(abs(temp_loggs[1:] - temp_loggs[:-1])) 
+        temp_mets = np.array(sorted(np.unique(grid_mets)))
+        met_step_original = np.min(abs(temp_mets[1:] - temp_mets[:-1])) 
+
+        self.teff_step_scale = round(1/teff_step_original * self._TEFF_WEIGHT,4) # weighs Teff as more important / "closer" when selecting neighbors
+        self.logg_step_scale = round(1/logg_step_original * self._LOGG_WEIGHT,4) # weighs logg as less important / further away when selecting neighbors
+        self.met_step_scale = round(1/met_step_original * self._MET_WEIGHT,4)
+        self.teffs = np.around(np.array(grid_teffs) * self.teff_step_scale, 0).astype(np.int32) # the attributes are scaled; these are used for selecting neighbors
+        self.loggs = np.around(np.array(grid_loggs)*self.logg_step_scale, 0).astype(np.int32)
+        self.mets = np.around(np.array(grid_mets) * self.met_step_scale, 0).astype(np.int32)
+        self.gridpoints = len(self.teffs)
+    
+    def initialize_tags(self, sav_grid, geometry):
+        """
+        Determine which vector fields (``vtags``) and scalar fields (``stags``)
+        of an atmosphere are present in ``sav_grid`` and should be
+        interpolated. "height" and "radius" are only included for spherical
+        ("SPH") geometry.
+
+        Returns
+        -------
+        vtags : list of str
+            Names of the per-depth-point (vector) fields to interpolate.
+        stags : list of str
+            Names of the scalar fields to interpolate.
+        """
+        relevant_atmo = sav_grid[(sav_grid['teff'] == self.grid_teffs[0]) & (sav_grid['logg'] == self.grid_loggs[0]) & (sav_grid['monh'] == self.grid_mets[0])]
+
+        vtags = ["temp", "xne", "xna", "rho"]
+        if "tau" in relevant_atmo.dtype.names:
+            vtags += ["tau"]
+        if "rhox" in relevant_atmo.dtype.names:
+            vtags += ["rhox"]
+        if "height" in relevant_atmo.dtype.names and geometry == "SPH":
+            vtags += ["height"] # Height will store height+radius during interpol
+
+        stags = ["teff", "logg", "monh", "vturb", "lonh"]
+        if "radius" in relevant_atmo.dtype.names and geometry == "SPH":
+            stags += ["radius"]
+
+        return vtags, stags
+
+    def initialize_depth(self, sav_grid):
+        """
+        Determine the common number of depth points (``self.depthpoints``) to
+        use for every vector field, based on the first grid atmosphere. Falls
+        back to the count of finite, positive "tau" values if "tau" has
+        trailing NaNs or zero-padding, since those do not represent real depth
+        points.
+        """
+        # Use first atmosphere to define sizes
+        relevant_atmo = sav_grid[(sav_grid['teff'] == self.grid_teffs[0]) & (sav_grid['logg'] == self.grid_loggs[0]) & (sav_grid['monh'] == self.grid_mets[0])]
+        temp = [len(relevant_atmo[vtag]) for vtag in self.vtags]
+        # check for irregularities in tau
+        if np.isnan(relevant_atmo["tau"][-1]): # Nan at the end
+            temp_notnan = relevant_atmo["tau"][~np.isnan(relevant_atmo["tau"])]
+            return len(temp_notnan)
+        elif relevant_atmo["tau"][-1] == 0: # zeroes at the end
+            temp_notnan = np.array(relevant_atmo["tau"])[np.array(relevant_atmo["tau"])>0.0]
+            return len(temp_notnan)
+        return np.min(temp) #return unaltered array length
+        
+
+    def read_in_grid(self, sav_grid):
+        """
+        Read every grid atmosphere's ``vtags``/``stags`` fields, convert them
+        via ``to_interp_space_vector``/``to_interp_space_scalar``, and stack
+        them into ``self.array_for_interpol`` (one flattened row per grid
+        point: all vector fields concatenated, followed by the scalars). This
+        is the array the RBF interpolant is fit to.
+        """
+        self.array_for_interpol = np.zeros(dtype='float64',shape=(self.gridpoints, len(self.vtags)*self.depthpoints + len(self.stags)))
+        for i in range(self.gridpoints): # Loop over all atmospheres
+            relevant_atmo = sav_grid[(sav_grid['teff'] == self.grid_teffs[i]) & (sav_grid['logg'] == self.grid_loggs[i]) & (sav_grid['monh'] == self.grid_mets[i])]
+            for n, vtag in enumerate(self.vtags): # Read in vectors
+                self.array_for_interpol[i,n*self.depthpoints:(n+1)*self.depthpoints] = self.to_interp_space_vector(vtag, relevant_atmo[vtag][:self.depthpoints], relevant_atmo)
+            for s, stag in enumerate(self.stags): # Read in scalars
+                self.array_for_interpol[i,len(self.vtags)*self.depthpoints + s] = self.to_interp_space_scalar(stag, relevant_atmo[stag])
+
+
 class AtmosphereInterpolator:
     def __init__(self, depth=None, interp=None, geom=None, lfs_atmo=None, verbose=0):
         self.depth = depth
@@ -34,6 +242,7 @@ class AtmosphereInterpolator:
 
         self.source = None
         self.atmo_grid = None
+        self.rbf_grid = None
         self.verbose = verbose
 
     def interp_atmo_grid(self, atmo_grid, teff, logg, monh):
@@ -89,16 +298,36 @@ class AtmosphereInterpolator:
         depth = self.determine_depth_scale(self.depth, atmo_grid)
         interp = self.determine_interpolation_scale(self.interp, atmo_grid)
 
-        # Find the corner models bracketing the given values
-        icor = self.find_corner_models(teff, logg, monh, atmo_grid)
 
-        # Interpolate the corner models
-        atmo = self.interpolate_corner_models(
-            teff, logg, monh, icor, atmo_grid, interp=interp
-        )
 
-        # TODO: Or should we only consider spherical models for interpolation of spherical modesl are requested?
-        geom, radius = self.spherical_model_correction(atmo_grid, icor, logg)
+        #### Option 1: if atmo_interp is rbf, call alternative method
+        if interp == "RBF":
+            if not isinstance(self.rbf_grid, RbfGrid): # check if we have an rbf grid initialized already:
+                self.rbf_grid = RbfGrid(atmo_grid, self.geom)
+            rbf_grid = self.rbf_grid
+            atmo = self.interpolate_RBF(teff, logg, monh, rbf_grid)
+            if self.geom == "SPH":
+                geom = "SPH"
+                radius = atmo.radius
+            else:
+                geom = "PP"
+                radius = None
+
+        
+        #### Option 2 (default): If atmo_interp is Rhox or Tau or sth similar, do the usual pysme interpolation by pairs
+        else:
+            # Find the corner models bracketing the given values
+            icor = self.find_corner_models(teff, logg, monh, atmo_grid)
+
+            
+            # Interpolate the corner models
+            atmo = self.interpolate_corner_models(
+                teff, logg, monh, icor, atmo_grid, interp=interp
+            )
+
+            # TODO: Or should we only consider spherical models for interpolation of spherical modesl are requested?
+            geom, radius = self.spherical_model_correction(atmo_grid, icor, logg)
+
         # Create ATMO.GEOM, if necessary, and set value.
         if self.geom is not None and self.geom != geom:
             if self.geom == "SPH":
@@ -122,6 +351,53 @@ class AtmosphereInterpolator:
         atmo.source = self.source
         atmo.method = "grid"
 
+        return atmo
+
+    def interpolate_RBF(self, teff, logg, monh, rbf_grid):
+        """
+        Interpolate a model atmosphere at (teff, logg, monh) using radial
+        basis function interpolation over ``rbf_grid``, as an alternative to
+        the corner-model interpolation used by ``interpolate_corner_models``.
+
+        Parameters
+        ----------
+        teff : float
+            effective temperature of desired model (K).
+        logg : float
+            logarithmic gravity of desired model (log cm/s/s).
+        monh : float
+            metallicity of desired model.
+        rbf_grid : RbfGrid
+            Precomputed RBF grid (rescaled coordinates, cached interpolator)
+            to interpolate from.
+
+        Returns
+        -------
+        atmo : Atmosphere
+            interpolated atmosphere data
+        """
+        target_params = np.array([round(teff * rbf_grid.teff_step_scale,3), round(logg * rbf_grid.logg_step_scale,3), round(monh * rbf_grid.met_step_scale,3)]) #scaled so all three params have same step-size
+        atmo = Atmo(interp="rhox") #purely to initliaize the structure
+
+        # INTERPOLATION (uses the interpolator cached on rbf_grid, built once for the whole grid)
+        target_vector = rbf_grid.interpolator([target_params])[0]
+
+        # READ-OUT
+        def from_interp_space_vector(vtag, values, atmo):
+            values = np.asarray(values)
+            if vtag == "height":
+                return 10.0 ** (values) - atmo["radius"] # separate height and radius
+            return 10.0 ** values
+        def from_interp_space_scalar(stag, value):
+            if stag == "radius":
+                return 10.0 ** value
+            return value
+
+        for s, stag in enumerate(rbf_grid.stags): # Read out scalars
+            atmo[stag] = from_interp_space_scalar(stag, target_vector[len(rbf_grid.vtags)*rbf_grid.depthpoints + s])
+        for n, vtag in enumerate(rbf_grid.vtags): # Read out vectors
+            atmo[vtag] = from_interp_space_vector(vtag, target_vector[n * rbf_grid.depthpoints : (n+1) * rbf_grid.depthpoints], atmo)
+        
         return atmo
 
     def interp_atmo_pair(self, atmo1, atmo2, frac, interpvar="RHOX", itop=0):
@@ -588,14 +864,14 @@ class AtmosphereInterpolator:
 
         Parameters
         ----------
-        interp : {"RHOX", "TAU", None}
+        interp : {"RHOX", "TAU", "RBF", None}
             requested interpolation axis, or None for autoselect
         atmo_grid : AtmosphereGrid
             Atmosphere grid for interpolation
 
         Returns
         -------
-        interp: {"RHOX", "TAU"}
+        interp: {"RHOX", "TAU", "RBF"}
             the interpolation axis
 
         Raises
@@ -616,11 +892,11 @@ class AtmosphereInterpolator:
             interp = "RHOX"
         else:
             raise AtmosphereError("no value for ATMO.INTERP")
-        if interp not in ["TAU", "RHOX"]:
+        if interp not in ["TAU", "RHOX", "RBF"]:
             raise AtmosphereError(
-                "ATMO.INTERP must be 'TAU' or 'RHOX', not '%s'" % interp
+                "ATMO.INTERP must be 'TAU', 'RHOX', or 'RBF', not '%s'" % interp
             )
-        if interp.lower() not in gtags:
+        if interp != "RBF" and interp.lower() not in gtags:
             raise AtmosphereError(
                 "ATMO.INTERP='{}', but ATMO. {} does not exist".format(interp, interp)
             )
