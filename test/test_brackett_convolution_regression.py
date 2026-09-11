@@ -68,7 +68,6 @@ sme.wave = [wave]
 sme.normalize_by_continuum = True
 sme.vrad_flag = "none"
 sme.cscale_flag = "none"
-sme.normalize_resample_mode = "ratio"
 mode = {mode!r}
 if mode is not None:
     sme.h_stark_convolution = mode
@@ -92,7 +91,6 @@ def _synthesize_ew(mode: str, center: float, half: float) -> float:
     )
     env = os.environ.copy()
     env.pop("PYSME_H_STARK_CONVOLUTION", None)  # rely on the API field, not env
-    env["PYSME_RESAMPLE_NORM_MODE"] = "ratio"
     proc = subprocess.run(
         [sys.executable, "-c", script],
         cwd=str(ROOT),
