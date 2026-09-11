@@ -121,6 +121,14 @@ jobs:
           restore-keys: |
             pysme-nlte-h-v1-${{ runner.os }}-
 
+      - name: Cache PySME atmosphere data
+        uses: actions/cache@v4
+        with:
+          path: ~/.sme/atmospheres
+          key: pysme-atmospheres-v1-${{ runner.os }}-${{ hashFiles('src/pysme/datafiles_atmospheres.json') }}
+          restore-keys: |
+            pysme-atmospheres-v1-${{ runner.os }}-
+
       - name: Cache checked-out SMElib build
         id: smelib-cache
         uses: actions/cache@v4
@@ -137,6 +145,20 @@ jobs:
           python - <<'PY'
           from pysme.large_file_storage import setup_nlte
           setup_nlte().get("nlte_H_pysme.grd")
+          PY
+
+      - name: Prefetch Na NLTE regression grid
+        run: |
+          python - <<'PY'
+          from pysme.large_file_storage import setup_nlte
+          setup_nlte().get("nlte_Na_multi_sun.grd")
+          PY
+
+      - name: Prefetch atmosphere grid
+        run: |
+          python - <<'PY'
+          from pysme.large_file_storage import setup_atmo
+          setup_atmo().get("marcs2012.sav")
           PY
 
       - name: Build checked-out SMElib
@@ -166,7 +188,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest
+          pytest --durations=20
 
   test_pytest_macos:
     name: Pytest on macOS (Python ${{ matrix.python-version }})
@@ -233,6 +255,14 @@ jobs:
           restore-keys: |
             pysme-nlte-h-v1-${{ runner.os }}-
 
+      - name: Cache PySME atmosphere data
+        uses: actions/cache@v4
+        with:
+          path: ~/.sme/atmospheres
+          key: pysme-atmospheres-v1-${{ runner.os }}-${{ hashFiles('src/pysme/datafiles_atmospheres.json') }}
+          restore-keys: |
+            pysme-atmospheres-v1-${{ runner.os }}-
+
       - name: Cache checked-out SMElib build
         id: smelib-cache
         uses: actions/cache@v4
@@ -249,6 +279,20 @@ jobs:
           python - <<'PY'
           from pysme.large_file_storage import setup_nlte
           setup_nlte().get("nlte_H_pysme.grd")
+          PY
+
+      - name: Prefetch Na NLTE regression grid
+        run: |
+          python - <<'PY'
+          from pysme.large_file_storage import setup_nlte
+          setup_nlte().get("nlte_Na_multi_sun.grd")
+          PY
+
+      - name: Prefetch atmosphere grid
+        run: |
+          python - <<'PY'
+          from pysme.large_file_storage import setup_atmo
+          setup_atmo().get("marcs2012.sav")
           PY
 
       - name: Build checked-out SMElib
@@ -278,7 +322,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest
+          pytest --durations=20
 
   build_docs:
     name: Build docs
