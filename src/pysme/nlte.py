@@ -529,19 +529,8 @@ class Grid:
         rabund = sel - sfe
         return rabund
 
-    def get(
-        self,
-        abund,
-        teff,
-        logg,
-        monh,
-        atmo,
-        interpolation_policy="allow",
-    ):
+    def get(self, abund, teff, logg, monh, atmo):
         rabund = self.scaled_rel_abund(abund)
-        self.validate_parameter_point(
-            rabund, teff, logg, monh, interpolation_policy=interpolation_policy
-        )
 
         if (len(self.limits) == 0 or not (
             (self.limits["xfe"][0] <= rabund <= self.limits["xfe"][-1])
@@ -552,18 +541,6 @@ class Grid:
             _ = self.read_grid(rabund, teff, logg, monh)
 
         return self.interpolate(rabund, teff, logg, monh, atmo)
-
-    def validate_parameter_point(
-        self, rabund, teff, logg, monh, interpolation_policy="allow"
-    ):
-        if str(interpolation_policy).lower() != "error":
-            return
-
-        if rabund < self._xfe[0] or rabund > self._xfe[-1]:
-            raise ValueError(
-                f"{self.elem} NLTE grid abundance is outside the interpolation boundary: "
-                f"requested [X/Fe]={rabund:.3f}, grid spans {self._xfe[0]:.3f} to {self._xfe[-1]:.3f}."
-            )
 
     # @profile
     def read_grid(self, rabund, teff, logg, monh):
@@ -1231,14 +1208,7 @@ class NLTE(Collection):
                 )
                 marked_for_removal += [elem]
                 continue
-            bmat = grid.get(
-                sme.abund,
-                sme.teff,
-                sme.logg,
-                sme.monh,
-                sme.atmo,
-                interpolation_policy=sme.interpolation_policy,
-            )
+            bmat = grid.get(sme.abund, sme.teff, sme.logg, sme.monh, sme.atmo)
             if bmat is None or grid.linerefs.size == 0:
                 self._handle_lte_fallback(
                     RuntimeError,
@@ -1289,14 +1259,7 @@ class NLTE(Collection):
 def nlte(sme, dll, elem, lfs_nlte):
     """Read and interpolate the NLTE grid for the current element and parameters"""
     grid = sme.nlte.get_grid(sme, elem, lfs_nlte)
-    subgrid = grid.get(
-        sme.abund,
-        sme.teff,
-        sme.logg,
-        sme.monh,
-        sme.atmo,
-        interpolation_policy=sme.interpolation_policy,
-    )
+    subgrid = grid.get(sme.abund, sme.teff, sme.logg, sme.monh, sme.atmo)
     return subgrid, grid.linerefs, grid.lineindices
 
 

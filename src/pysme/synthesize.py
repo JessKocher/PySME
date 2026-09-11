@@ -18,7 +18,6 @@ from scipy.spatial.distance import cdist
 
 from . import broadening
 from .atmosphere.interpolation import AtmosphereInterpolator
-from .atmosphere.providers import resolve_routine_atmosphere_provider
 from .continuum_and_radial_velocity import (
     apply_radial_velocity_and_continuum,
     match_rv_continuum,
@@ -56,95 +55,6 @@ pd.options.mode.chained_assignment = None  # None means no warning will be shown
 logger = logging.getLogger(__name__)
 
 clight = speed_of_light * 1e-3  # km/s
-
-
-def _resolve_config_value(explicit_value, env_name, default, valid_values):
-    if explicit_value is not None:
-        mode = explicit_value.strip().lower() if isinstance(explicit_value, str) else explicit_value
-        if mode not in valid_values:
-            logger.warning(
-                "Unknown explicit %s=%r, falling back to %r.",
-                env_name,
-                explicit_value,
-                default,
-            )
-            return default
-        return mode
-
-    value = os.environ.get(env_name, default)
-    mode = value.strip().lower() if value is not None else default
-    if mode not in valid_values:
-        logger.warning(
-            "Unknown %s=%r, falling back to %r.",
-            env_name,
-            value,
-            default,
-        )
-        return default
-    return mode
-
-
-def _get_resample_norm_mode(sme=None):
-    explicit = getattr(sme, "normalize_resample_mode", None) if sme is not None else None
-    return _resolve_config_value(
-        explicit,
-        "PYSME_RESAMPLE_NORM_MODE",
-        "separate",
-        {"separate", "ratio"},
-    )
-
-
-def _get_profile_nlte_h_corr_mode(sme=None):
-    explicit = None
-    if sme is not None and getattr(sme, "profile_nlte", None) is not None:
-        explicit = getattr(sme.profile_nlte, "correction_construction", None)
-    return _resolve_config_value(
-        explicit,
-        "PYSME_PROFILE_NLTE_H_CORR_MODE",
-        "separate",
-        {"separate", "ratio"},
-    )
-
-
-def _resample_norm_debug_enabled():
-    value = os.environ.get("PYSME_RESAMPLE_NORM_DEBUG", "")
-    return value.strip().lower() in {"1", "true", "yes", "on", "debug"}
-
-
-def _profile_nlte_h_corr_debug_enabled():
-    value = os.environ.get("PYSME_PROFILE_NLTE_H_CORR_DEBUG", "")
-    return value.strip().lower() in {"1", "true", "yes", "on", "debug"}
-
-
-@contextmanager
-def _temporary_smelib_experimental_env(sme):
-    explicit_updates = {}
-    if sme is not None:
-        if getattr(sme, "h_line_mode", None) is not None:
-            explicit_updates["PYSME_H_OCCPROB_MODE"] = str(sme.h_line_mode)
-        if getattr(sme, "h_line_form", None) is not None:
-            explicit_updates["PYSME_H_OCCPROB_FORM"] = str(sme.h_line_form)
-        if getattr(sme, "normalize_resample_mode", None) is not None:
-            explicit_updates["PYSME_RESAMPLE_NORM_MODE"] = str(sme.normalize_resample_mode)
-        if (
-            getattr(sme, "profile_nlte", None) is not None
-            and getattr(sme.profile_nlte, "correction_construction", None) is not None
-        ):
-            explicit_updates["PYSME_PROFILE_NLTE_H_CORR_MODE"] = str(
-                sme.profile_nlte.correction_construction
-            )
-
-    old_values = {key: os.environ.get(key) for key in explicit_updates}
-    try:
-        for key, value in explicit_updates.items():
-            os.environ[key] = value
-        yield
-    finally:
-        for key, old in old_values.items():
-            if old is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = old
 
 
 @contextmanager
@@ -571,15 +481,10 @@ class Synthesizer:
                 self.atmosphere_interpolator.geom = atmo.geom
 
             atmo = self.atmosphere_interpolator.interp_atmo_grid(
-                atmo.source,
-                sme.teff,
-                sme.logg,
-                sme.monh,
-                interpolation_policy=sme.interpolation_policy,
+                atmo.source, sme.teff, sme.logg, sme.monh
             )
         elif atmo.method == "routine":
-            provider = resolve_routine_atmosphere_provider(atmo.source)
-            atmo = provider(sme, atmo)
+            atmo = atmo.source(sme, atmo)
         elif atmo.method == "embedded":
             # atmo structure already extracted in sme_main
             pass
@@ -1974,7 +1879,7 @@ class Synthesizer:
         #     dll.SetH2broad(sme.h2broad)
 
         # if passNLTE:
-        #     sme.nlte.update_coefficients(sme, dll, self.lfs_nlte, sme.first_segment)        
+        #     sme.nlte.update_coefficients(sme, dll, self.lfs_nlte, sme.first_segment)
 
         # Priority for wavelength grid passed to SMElib:
         # 1) user-provided sme.wint for this segment
@@ -1996,11 +1901,7 @@ class Synthesizer:
         else:
             wint_seg = None
 
-        # Scope all native hydrogen-profile switches to this synthesis call.
-        with (
-            _temporary_smelib_experimental_env(sme),
-            _temporary_brackett_convolution_env(sme),
-        ):
+        with _temporary_brackett_convolution_env(sme):
             dll.InputWaveRange(wbeg-2, wend+2)
             dll.Opacity()
 
@@ -2037,39 +1938,25 @@ class Synthesizer:
         if user_wint_seg is None and wint_seg is None:
             self.wint[segment] = wint
 
-        ratio_resampled = None
         if not sme.specific_intensities_only:
             # Create new geomspaced wavelength grid, to be used for intermediary steps
             wgrid, vstep = self.new_wavelength_grid(wint)
-            native_wint = np.asarray(wint, dtype=np.float64)
-            has_rotmacro = np.any(np.asarray(sme.vsini, dtype=float) != 0) or np.any(
-                np.asarray(sme.vmac, dtype=float) != 0
-            )
-            has_ip = "iptype" in sme and sme.iptype is not None and (
-                np.any(np.asarray(sme.ipres, dtype=float) > 0)
-            )
 
             logger.debug("Integrate specific intensities")
             # Radiative Transfer Integration
             # Continuum
-            sint_native = self.integrate_flux(sme.mu, sint, 1, 0, 0)
-            cint_native = self.integrate_flux(sme.mu, cint, 1, 0, 0)
-            cint_resampled_standard = np.interp(wgrid, native_wint, cint_native)
+            cint = self.integrate_flux(sme.mu, cint, 1, 0, 0)
+            cint = np.interp(wgrid, wint, cint)
 
             # Broaden Spectrum
             y_integrated = np.empty((sme.nmu, len(wgrid)))
-            y_cont_integrated = np.empty((sme.nmu, len(wgrid)))
             for imu in range(sme.nmu):
-                y_integrated[imu] = np.interp(wgrid, native_wint, sint[imu])
-                y_cont_integrated[imu] = np.interp(wgrid, native_wint, cint[imu])
+                y_integrated[imu] = np.interp(wgrid, wint, sint[imu])
 
             # Turbulence broadening
             # Apply macroturbulent and rotational broadening while integrating intensities
             # over the stellar disk to produce flux spectrum Y.
             sint = self.integrate_flux(sme.mu, y_integrated, vstep, sme.vsini, sme.vmac)
-            cint_ratio_internal = self.integrate_flux(
-                sme.mu, y_cont_integrated, vstep, sme.vsini, sme.vmac
-            )
             wint = wgrid
 
             # instrument broadening
@@ -2077,54 +1964,15 @@ class Synthesizer:
                 logger.debug("Apply detector broadening")
                 ipres = sme.ipres.item() if np.size(sme.ipres) == 1 else sme.ipres[segment]
                 sint = broadening.apply_broadening(ipres, wint, sint, type=sme.iptype, sme=sme)
-                cint_ratio_internal = broadening.apply_broadening(
-                    ipres, wint, cint_ratio_internal, type=sme.iptype, sme=sme
-                )
 
             # Apply the correction on Ha, Hb and Hgamma line here.
             if self._is_profile_nlte_h_applied(sme):
                 correction_resample = safe_interpolation(sme.tdnlte_H_correction[0], sme.tdnlte_H_correction[1], wint, fill_value=1)
                 sint *= correction_resample
 
-            if sme.normalize_by_continuum and _get_resample_norm_mode(sme) == "ratio":
-                if not has_rotmacro and not has_ip:
-                    valid = np.isfinite(sint_native) & np.isfinite(cint_native) & (cint_native > 0)
-                    if np.all(valid):
-                        ratio_resampled = np.interp(wgrid, native_wint, sint_native / cint_native)
-                        if self._is_profile_nlte_h_applied(sme):
-                            ratio_resampled *= correction_resample
-                    else:
-                        logger.warning(
-                            "PYSME_RESAMPLE_NORM_MODE=ratio encountered invalid native "
-                            "continuum points in synthesize_segment; falling back to separate."
-                        )
-                else:
-                    valid = (
-                        np.isfinite(sint)
-                        & np.isfinite(cint_ratio_internal)
-                        & (cint_ratio_internal > 0)
-                    )
-                    if np.all(valid):
-                        ratio_resampled = sint / cint_ratio_internal
-                    else:
-                        if _resample_norm_debug_enabled():
-                            logger.warning(
-                                "PYSME_RESAMPLE_NORM_MODE=ratio encountered invalid broadened "
-                                "continuum points in synthesize_segment; falling back to separate."
-                            )
-
-        # Divide calculated spectrum by continuum only for the standard
-        # flux-spectrum path. specific_intensities_only keeps raw sint/cint.
-        if not sme.specific_intensities_only:
-            if sme.normalize_by_continuum:
-                if ratio_resampled is not None:
-                    sint = ratio_resampled
-                    cint = cint_resampled_standard
-                else:
-                    sint /= cint_resampled_standard
-                    cint = cint_resampled_standard
-            else:
-                cint = cint_resampled_standard
+        # Divide calculated spectrum by continuum
+        if sme.normalize_by_continuum:
+            sint /= cint
 
         # Line info is only needed for update_cdr workflow.
         if compute_lineinfo:
@@ -2829,13 +2677,9 @@ class Synthesizer:
         """
         Compute the 3D NLTE correction factor for hydrogen lines, using RBF interpolator and in intensities.
 
-        This supports an isolated correction-construction experiment controlled by
-        PYSME_PROFILE_NLTE_H_CORR_MODE=separate|ratio. The default remains
-        separate to preserve current behaviour.
         """
 
         logger.info(f"Getting H 3dnlte correction using RBF")
-        corr_mode = _get_profile_nlte_h_corr_mode(sme)
 
         sme_H_only = SME_Structure()
         sme_H_only.teff, sme_H_only.logg, sme_H_only.monh, sme_H_only.vmic, sme_H_only.vmac, sme_H_only.vsini = sme.teff, sme.logg, sme.monh, sme.vmic, sme.vmac, sme.vsini
@@ -2898,68 +2742,6 @@ class Synthesizer:
             cint_single = cont_3dnlte_H[:, mask]
             wgrid, vstep = self.new_wavelength_grid(wint_single)
 
-            if corr_mode == "ratio":
-                has_rotmacro = np.any(np.asarray(sme.vsini, dtype=float) != 0) or np.any(
-                    np.asarray(sme.vmac, dtype=float) != 0
-                )
-                has_ip = sme.iptype is not None and np.any(np.asarray(sme.ipres, dtype=float) > 0)
-
-                sint_flux_native = self.integrate_flux(mu_3d, sint_single, 1, 0, 0, wt=wt_3d)
-                cint_flux_native = self.integrate_flux(mu_3d, cint_single, 1, 0, 0, wt=wt_3d)
-
-                if not has_rotmacro and not has_ip:
-                    valid = (
-                        np.isfinite(sint_flux_native)
-                        & np.isfinite(cint_flux_native)
-                        & (cint_flux_native > 0)
-                    )
-                    if np.all(valid):
-                        flux_norm_segment = np.interp(
-                            wgrid, wint_single, sint_flux_native / cint_flux_native
-                        )
-                    else:
-                        logger.warning(
-                            "PYSME_PROFILE_NLTE_H_CORR_MODE=ratio encountered invalid native "
-                            "continuum points in get_H_3dnlte_correction_rbf; falling back to separate."
-                        )
-                        corr_mode = "separate"
-                else:
-                    y_line = np.empty((len(mu_3d), len(wgrid)))
-                    y_cont = np.empty((len(mu_3d), len(wgrid)))
-                    for imu in range(len(mu_3d)):
-                        y_line[imu] = np.interp(wgrid, wint_single, sint_single[imu])
-                        y_cont[imu] = np.interp(wgrid, wint_single, cint_single[imu])
-                    sint_flux = self.integrate_flux(
-                        mu_3d, y_line, vstep, sme.vsini, sme.vmac, wt=wt_3d
-                    )
-                    cint_flux = self.integrate_flux(
-                        mu_3d, y_cont, vstep, sme.vsini, sme.vmac, wt=wt_3d
-                    )
-
-                    if sme.iptype is not None:
-                        ipres = sme.ipres.item() if np.size(sme.ipres) == 1 else sme.ipres[0]
-                        sint_flux = broadening.apply_broadening(
-                            ipres, wgrid, sint_flux, type=sme.iptype, sme=sme
-                        )
-                        cint_flux = broadening.apply_broadening(
-                            ipres, wgrid, cint_flux, type=sme.iptype, sme=sme
-                        )
-
-                    valid = np.isfinite(sint_flux) & np.isfinite(cint_flux) & (cint_flux > 0)
-                    if np.all(valid):
-                        flux_norm_segment = sint_flux / cint_flux
-                    else:
-                        logger.warning(
-                            "PYSME_PROFILE_NLTE_H_CORR_MODE=ratio encountered invalid broadened "
-                            "continuum points in get_H_3dnlte_correction_rbf; falling back to separate."
-                        )
-                        corr_mode = "separate"
-
-                if corr_mode == "ratio":
-                    flux_wave.append(wgrid)
-                    flux_norm.append(flux_norm_segment)
-                    continue
-
             cint_flux = self.integrate_flux(mu_3d, cint_single, 1, 0, 0, wt=wt_3d)
             cint_flux = np.interp(wgrid, wint_single, cint_flux)
 
@@ -2981,17 +2763,6 @@ class Synthesizer:
 
         flux_wave = np.concatenate(flux_wave)
         flux_norm = np.concatenate(flux_norm)
-
-        if _profile_nlte_h_corr_debug_enabled():
-            logger.warning(
-                "Profile-NLTE H correction mode=%s, flux_norm min/max=[%.6g, %.6g], "
-                "1D H-only min/max=[%.6g, %.6g]",
-                corr_mode,
-                float(np.nanmin(flux_norm)),
-                float(np.nanmax(flux_norm)),
-                float(np.nanmin(sme_H_only_res.synth[0])),
-                float(np.nanmax(sme_H_only_res.synth[0])),
-            )
 
         correction = safe_interpolation(
             flux_wave,
@@ -3027,7 +2798,6 @@ class Synthesizer:
             "applied": False,
             "element": element,
             "provider": provider,
-            "correction_construction": None,
             "species": provider_cfg.species if provider_cfg is not None else None,
             "profile_kind": provider_cfg.profile_kind if provider_cfg is not None else None,
             "data_key": provider_cfg.data_key if provider_cfg is not None else None,
@@ -3153,7 +2923,6 @@ class Synthesizer:
                 return
             sme.tdnlte_H_correction = correction
             summary["applied"] = True
-            summary["correction_construction"] = _get_profile_nlte_h_corr_mode(sme)
             sme.tdnlte_H = True
             return
 

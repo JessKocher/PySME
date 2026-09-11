@@ -1,28 +1,15 @@
 # Atmosphere
 
-For the spectral synthesis PySME needs a model atmosphere
-to perform the radiative transfer in. PySME does not come
-with a set of atmospheres in each distribution but instead
-uses the LFS (See [lfs](lfs.md)) to fetch only the required
-model atmosphere when run.
+PySME needs a model atmosphere to perform the radiative-transfer calculation.
+Atmospheres are not included in each distribution; PySME uses the LFS (see [lfs](lfs.md)) to fetch the required model when it is first used.
 
 If you want to provide your own model atmosphere file, it should be present in `~/.sme/atmospheres/`.
 
-Each atmosphere model file describes a grid of models, on
-which we then linearly interpolate to the desired stellar parameters.
-PySME now exposes this behaviour via `sme.interpolation_policy`:
+Each atmosphere model file describes a grid on which PySME interpolates to the requested stellar parameters.
+PySME can extrapolate beyond the grid where the interpolation permits it and issues a warning when it does so.
 
-- `allow` (default): allow parameter-space extrapolation if interpolation can proceed
-- `error`: forbid parameter-space extrapolation and raise an error once the requested point leaves the atmosphere-grid boundary
-
-For the default MARCS atmosphere, the strict boundary is defined in the
-`Teff-logg` plane separately for each `[M/H]` slice and interpolated linearly
-between neighbouring `[M/H]` slices.
-
-Note that the atmosphere also contains a seperate set of stellar
-parameters, which is usually the same as that of the sme structure,
-but can be different, if for example the atmosphere is embedded, i.e.
-fixed, or has not been calculated yet.
+The atmosphere also contains its own set of stellar parameters, which usually matches the SME structure.
+The values can differ when, for example, the atmosphere is embedded and fixed or has not yet been calculated.
 
 The atmopshere object has the following fields:
 
@@ -74,11 +61,6 @@ The atmopshere object has the following fields:
   - ll_vmic2.0.sav
 
 ### Grid plots
-
-The plots below are expanded by `[M/H]` to make the practical coverage easier
-to inspect. The default `marcs2012.sav` figure additionally shows the current
-strict extrapolation boundary in red. The other atmosphere figures show grid
-coverage only.
 
 `marcs2012.sav`
 ![](../img/atmosphere/marcs2012_grid.png)
