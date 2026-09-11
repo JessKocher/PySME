@@ -1833,7 +1833,7 @@ class Synthesizer:
         edgecase_mu = np.sqrt(1-(bottom_of_atmosphere_fraction-0.01)**2) #round down by 1 percent so this one is in core
 
         non_grazing_number = 10
-        non_grazing_mus = ( edgecase_mu**2 * (2 * np.arange(non_grazing_number) + 1) / (2 * non_grazing_number) ) ** 0.5 #OBS TODO plot to check this, it's from Claude
+        non_grazing_mus = ( 1 - (1 - edgecase_mu**2) * (2 * np.arange(non_grazing_number) + 1) / (2 * non_grazing_number) ) ** 0.5 #OBS TODO plot to check this, it's from Claude
 
         ### For grazing rays, check nr of depthpoints and distribute our rays among them ##
         # OBS TODO this should be same for all iterations bc n_depthpoints and grazing_number stay the same; may as well define it once and then just call it later
