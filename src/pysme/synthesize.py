@@ -1659,6 +1659,7 @@ class Synthesizer:
             dll.UpdateLineList(sme.atomic, sme.species, updateLineList)
         if passAtmosphere:
             sme = self.get_atmosphere(sme)
+            self.dynamically_update_mu(sme)
             dll.InputModel(sme.teff, sme.logg, sme.vmic, sme.atmo)
             dll.InputAbund(sme.abund)
             with warnings.catch_warnings(record=True) as caught_warnings:
@@ -1823,6 +1824,29 @@ class Synthesizer:
 
         # Cleanup
         return result
+
+    def dynamically_update_mu(self, sme):
+        # for non-grazing rays, space out by sqrt as before, up to the bottom of the atmosphere
+        bottom_of_atmosphere_cm = sme._atmo.height[-1] + sme._atmo.radius
+        top_of_atmosphere_cm = sme._atmo.height[0] + sme._atmo.radius
+        bottom_of_atmosphere_fraction = bottom_of_atmosphere_cm/top_of_atmosphere_cm
+        edgecase_mu = np.sqrt(1-(bottom_of_atmosphere_fraction-0.01)**2) #round down by 1 percent so this one is in core
+
+        non_grazing_number = 10
+        non_grazing_mus = ( edgecase_mu**2 * (2 * np.arange(non_grazing_number) + 1) / (2 * non_grazing_number) ) ** 0.5 #OBS TODO plot to check this, it's from Claude
+
+        ### For grazing rays, check nr of depthpoints and distribute our rays among them ##
+        # OBS TODO this should be same for all iterations bc n_depthpoints and grazing_number stay the same; may as well define it once and then just call it later
+        grazing_number = 10
+        nr_of_depthpoints = sme._atmo.ndepth
+        depth_indices = np.linspace(2,nr_of_depthpoints-1,grazing_number).astype(int)
+        heights_for_these_rays = np.array(sme._atmo.height)[depth_indices] + sme._atmo.radius
+        mus_for_these_rays = np.sqrt(1-(heights_for_these_rays)**2)
+
+        mulist = sorted(np.concatenate((non_grazing_mus, mus_for_these_rays)), reverse=True)
+        sme.mu = mulist 
+        print("Updated mu list")
+
 
     # @profile
     def synthesize_segment(
