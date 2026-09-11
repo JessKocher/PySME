@@ -106,7 +106,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gfortran
+          sudo apt-get install -y autoconf automake gfortran libtool
 
       - name: Install package and test dependencies
         run: |
@@ -121,16 +121,16 @@ jobs:
           restore-keys: |
             pysme-nlte-h-v1-${{ runner.os }}-
 
-      - name: Cache SMElib artifacts
+      - name: Cache checked-out SMElib build
+        id: smelib-cache
         uses: actions/cache@v4
         with:
           path: |
+            smelib/lib
             src/pysme/lib
             src/pysme/share/libsme
             src/pysme/smelib/_smelib*.so
-          key: pysme-smelib-v1-${{ runner.os }}-${{ matrix.python-version }}
-          restore-keys: |
-            pysme-smelib-v1-${{ runner.os }}-
+          key: pysme-smelib-source-v1-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('smelib/src/**', 'smelib/pymodule/**', 'src/pysme/smelib/_smelib.cpp', 'src/pysme/smelib/sme_synth_faster.h', 'src/pysme/smelib/build_smelib.py') }}
 
       - name: Prefetch H NLTE grid
         run: |
@@ -139,12 +139,29 @@ jobs:
           setup_nlte().get("nlte_H_pysme.grd")
           PY
 
-      - name: Prefetch SMElib
+      - name: Build checked-out SMElib
+        if: steps.smelib-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd smelib
+          ./bootstrap
+          ./configure --prefix="$PWD"
+          make -j2
+          make install
+          cd ..
+          python - <<'PY'
+          from pathlib import Path
+          from pysme.smelib.libtools import compile_interface, link_interface_smelib
+          link_interface_smelib(str(Path("smelib").resolve()))
+          compile_interface()
+          PY
+
+      - name: Verify checked-out SMElib
         run: |
           python - <<'PY'
-          from pysme.smelib.libtools import compile_interface, download_smelib
-          download_smelib()
-          compile_interface()
+          from pysme.smelib import _smelib
+          assert hasattr(_smelib, "GetContinuumOpacityComponents")
+          print(_smelib.LibraryVersion())
           PY
 
       - name: Run pytest
@@ -173,7 +190,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install gcc
+          brew install gcc libtool automake
 
       - name: Select macOS compilers
         run: |
@@ -192,12 +209,16 @@ jobs:
           [ -x /usr/bin/clang ] || { echo "No clang found"; exit 1; }
           [ -x /usr/bin/clang++ ] || { echo "No clang++ found"; exit 1; }
           if [ -x "$BREW_PREFIX/bin/gfortran-$FVER" ]; then
-            echo "FC=$BREW_PREFIX/bin/gfortran-$FVER" >> $GITHUB_ENV
+            FC_PATH="$BREW_PREFIX/bin/gfortran-$FVER"
           else
-            echo "FC=$BREW_PREFIX/bin/gfortran" >> $GITHUB_ENV
+            FC_PATH="$BREW_PREFIX/bin/gfortran"
           fi
+          GFORTRAN_LIBDIR="$(dirname "$($FC_PATH -print-file-name=libgfortran.dylib)")"
+          echo "FC=$FC_PATH" >> $GITHUB_ENV
           echo "CC=/usr/bin/clang" >> $GITHUB_ENV
           echo "CXX=/usr/bin/clang++" >> $GITHUB_ENV
+          echo "LDFLAGS=-L$GFORTRAN_LIBDIR -Wl,-rpath,$GFORTRAN_LIBDIR -Wl,-install_name,@rpath/libsme.dylib" >> $GITHUB_ENV
+          echo "$(brew --prefix libtool)/bin" >> $GITHUB_PATH
 
       - name: Install package and test dependencies
         run: |
@@ -212,16 +233,16 @@ jobs:
           restore-keys: |
             pysme-nlte-h-v1-${{ runner.os }}-
 
-      - name: Cache SMElib artifacts
+      - name: Cache checked-out SMElib build
+        id: smelib-cache
         uses: actions/cache@v4
         with:
           path: |
+            smelib/lib
             src/pysme/lib
             src/pysme/share/libsme
             src/pysme/smelib/_smelib*.so
-          key: pysme-smelib-v1-${{ runner.os }}-${{ matrix.python-version }}
-          restore-keys: |
-            pysme-smelib-v1-${{ runner.os }}-
+          key: pysme-smelib-source-v1-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('smelib/src/**', 'smelib/pymodule/**', 'src/pysme/smelib/_smelib.cpp', 'src/pysme/smelib/sme_synth_faster.h', 'src/pysme/smelib/build_smelib.py') }}
 
       - name: Prefetch H NLTE grid
         run: |
@@ -230,12 +251,29 @@ jobs:
           setup_nlte().get("nlte_H_pysme.grd")
           PY
 
-      - name: Prefetch SMElib
+      - name: Build checked-out SMElib
+        if: steps.smelib-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd smelib
+          ./bootstrap
+          ./configure --prefix="$PWD"
+          make -j2
+          make install
+          cd ..
+          python - <<'PY'
+          from pathlib import Path
+          from pysme.smelib.libtools import compile_interface, link_interface_smelib
+          link_interface_smelib(str(Path("smelib").resolve()))
+          compile_interface()
+          PY
+
+      - name: Verify checked-out SMElib
         run: |
           python - <<'PY'
-          from pysme.smelib.libtools import compile_interface, download_smelib
-          download_smelib()
-          compile_interface()
+          from pysme.smelib import _smelib
+          assert hasattr(_smelib, "GetContinuumOpacityComponents")
+          print(_smelib.LibraryVersion())
           PY
 
       - name: Run pytest

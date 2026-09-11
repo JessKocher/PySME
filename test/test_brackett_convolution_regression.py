@@ -43,13 +43,7 @@ LEGACY_EW_REL_TOL = 0.005  # 0.5%
 
 WORKER = r'''
 import os, sys
-from pathlib import Path
 import numpy as np
-sys.meta_path[:] = [
-    finder for finder in sys.meta_path
-    if finder.__class__.__module__ != "_editable_skbc_pysme_astro"
-]
-sys.path.insert(0, str(Path({root!r}) / "src"))
 from pysme.abund import Abund
 from pysme.linelist.vald import ValdFile
 from pysme.sme import SME_Structure
@@ -82,7 +76,6 @@ def _synthesize_ew(mode: str, center: float, half: float) -> float:
     # Explicit modes use the public API field.  None leaves the SME_Structure
     # default untouched for the default-path test.
     script = WORKER.format(
-        root=str(ROOT),
         mode=mode,
         sun=SUN,
         linelist=str(LINELIST),
