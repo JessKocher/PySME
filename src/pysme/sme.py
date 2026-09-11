@@ -264,6 +264,10 @@ class SME_Structure(Parameters):
             "str or None: Experimental hydrogen-line correction form; None keeps legacy/default behaviour"),
         ("gam6", 1, asfloat, this, "float: van der Waals scaling factor"),
         ("h2broad", True, asbool, this, "bool: Whether to use H2 broadening or not"),
+        ("h_stark_convolution", "legacy", lowercase(oneof(None, "legacy", "convolution")), this,
+            "str or None: Brackett Stark profile construction; 'legacy' keeps "
+            "the additive profile and 'convolution' enables the shared-support "
+            "convolution for Brackett lines with upper level m >= 10"),
         ("accwi", 3e-3, asfloat, this,
             "float: minimum accuracy for linear spectrum interpolation vs. wavelength."),
         ("accrt", 1e-4, asfloat, this,

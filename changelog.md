@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-09
+
+- Added `sme.h_stark_convolution = "convolution"` for Br10 and higher.
+  The default remains `"legacy"`.
+  See the [SMElib v6.13.18 documentation](https://github.com/SpectroscopyMadeEasy/SMElib/blob/v6.13.18/docs/brackett_stark_convolution.md).
+
 ## 2026-06-26
 
 - Added an opt-in continuum-scattering source treatment for plane-parallel and

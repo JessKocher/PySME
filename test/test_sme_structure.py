@@ -86,6 +86,7 @@ def test_empty_structure():
     assert empty.continuum_scattering_source is False
     assert empty.normalize_resample_mode is None
     assert empty.profile_nlte.correction_construction is None
+    assert empty.h_stark_convolution == "legacy"
 
 
 def test_save_and_load_structure(filename):
@@ -127,6 +128,20 @@ def test_continuum_scattering_source_field(filename):
     sme.save(filename)
     loaded = SME_Struct.load(filename)
     assert loaded.continuum_scattering_source is True
+
+
+def test_h_stark_convolution_field(filename):
+    sme = SME_Struct()
+
+    assert sme.h_stark_convolution == "legacy"
+    sme.h_stark_convolution = "convolution"
+    sme.save(filename)
+
+    loaded = SME_Struct.load(filename)
+    assert loaded.h_stark_convolution == "convolution"
+
+    with pytest.raises(ValueError):
+        loaded.h_stark_convolution = "unknown"
 
 
 def test_load_idl_savefile(cwd):
