@@ -18,7 +18,6 @@ from scipy.spatial.distance import cdist
 
 from . import broadening
 from .atmosphere.interpolation import AtmosphereInterpolator
-from .atmosphere.providers import resolve_routine_atmosphere_provider
 from .continuum_and_radial_velocity import (
     apply_radial_velocity_and_continuum,
     match_rv_continuum,
@@ -571,15 +570,10 @@ class Synthesizer:
                 self.atmosphere_interpolator.geom = atmo.geom
 
             atmo = self.atmosphere_interpolator.interp_atmo_grid(
-                atmo.source,
-                sme.teff,
-                sme.logg,
-                sme.monh,
-                interpolation_policy=sme.interpolation_policy,
+                atmo.source, sme.teff, sme.logg, sme.monh
             )
         elif atmo.method == "routine":
-            provider = resolve_routine_atmosphere_provider(atmo.source)
-            atmo = provider(sme, atmo)
+            atmo = atmo.source(sme, atmo)
         elif atmo.method == "embedded":
             # atmo structure already extracted in sme_main
             pass
