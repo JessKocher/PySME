@@ -1841,11 +1841,11 @@ class Synthesizer:
         nr_of_depthpoints = sme._atmo.ndep
         depth_indices = np.linspace(2,nr_of_depthpoints-1,grazing_number).astype(int)
         heights_for_these_rays = np.array(sme._atmo.height)[depth_indices] + sme._atmo.radius
-        mus_for_these_rays = np.sqrt(1-(heights_for_these_rays)**2)
+        mus_for_these_rays = np.sqrt(1-(heights_for_these_rays/top_of_atmosphere_cm)**2)
 
         mulist = sorted(np.concatenate((non_grazing_mus, mus_for_these_rays)), reverse=True)
         sme.mu = mulist 
-        print("Updated mu list")
+        print(f"Updated mu list to {sme.mu}")
 
 
     # @profile
