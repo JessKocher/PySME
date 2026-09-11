@@ -1838,7 +1838,7 @@ class Synthesizer:
         ### For grazing rays, check nr of depthpoints and distribute our rays among them ##
         # OBS TODO this should be same for all iterations bc n_depthpoints and grazing_number stay the same; may as well define it once and then just call it later
         grazing_number = 10
-        nr_of_depthpoints = sme._atmo.ndepth
+        nr_of_depthpoints = sme._atmo.ndep
         depth_indices = np.linspace(2,nr_of_depthpoints-1,grazing_number).astype(int)
         heights_for_these_rays = np.array(sme._atmo.height)[depth_indices] + sme._atmo.radius
         mus_for_these_rays = np.sqrt(1-(heights_for_these_rays)**2)
