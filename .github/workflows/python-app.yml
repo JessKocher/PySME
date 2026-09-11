@@ -147,6 +147,13 @@ jobs:
           setup_nlte().get("nlte_H_pysme.grd")
           PY
 
+      - name: Prefetch Na NLTE regression grid
+        run: |
+          python - <<'PY'
+          from pysme.large_file_storage import setup_nlte
+          setup_nlte().get("nlte_Na_multi_sun.grd")
+          PY
+
       - name: Prefetch atmosphere grid
         run: |
           python - <<'PY'
@@ -272,6 +279,13 @@ jobs:
           python - <<'PY'
           from pysme.large_file_storage import setup_nlte
           setup_nlte().get("nlte_H_pysme.grd")
+          PY
+
+      - name: Prefetch Na NLTE regression grid
+        run: |
+          python - <<'PY'
+          from pysme.large_file_storage import setup_nlte
+          setup_nlte().get("nlte_Na_multi_sun.grd")
           PY
 
       - name: Prefetch atmosphere grid
