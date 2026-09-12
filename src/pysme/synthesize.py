@@ -28,7 +28,6 @@ from .large_file_storage import setup_lfs
 from .sme import MASK_VALUES
 from .sme_synth import SME_DLL
 from .util import (
-    show_progress_bars,
     boundary_vertices,
     safe_interpolation,
     interpolate_3DNLTEH_intensity_continuum_RBF,
@@ -1028,13 +1027,16 @@ class Synthesizer:
         cdr_grid_overwrite=False,
         mode='linear',
         dims=['teff', 'logg', 'monh'],
-        show_progress_bars=show_progress_bars,
+        show_progress_bars=None,
         allow_compute=True,
     ):
         """
         Compute ALMAX/range preselection for the full linelist and update columns:
         'almax_ratio', 'strong', 'line_range_s', 'line_range_e'.
         """
+
+        if show_progress_bars is None:
+            show_progress_bars = util.show_progress_bars
 
         if chunk_size is None:
             chunk_size = getattr(
@@ -1439,7 +1441,7 @@ class Synthesizer:
                         line_precompute_database=line_precompute_database,
                         cdr_database=cdr_database,
                         cdr_create=cdr_create,
-                        show_progress_bars=show_progress_bars,
+                        show_progress_bars=util.show_progress_bars,
                         allow_compute=allow_compute,
                     )
                 except FileNotFoundError as exc:
@@ -1554,7 +1556,7 @@ class Synthesizer:
                         line_precompute_database=line_precompute_database,
                         cdr_database=cdr_database,
                         cdr_create=cdr_create,
-                        show_progress_bars=show_progress_bars,
+                        show_progress_bars=util.show_progress_bars,
                         allow_compute=allow_compute,
                     )
                 except FileNotFoundError as exc:
@@ -1661,7 +1663,7 @@ class Synthesizer:
             keep_line_opacity_eff = True
         compute_lineinfo = bool(self.update_cdr_switch)
         sme.first_segment = True
-        for il in tqdm(segments, desc="Segments", leave=True, disable=not show_progress_bars):
+        for il in tqdm(segments, desc="Segments", leave=True, disable=not util.show_progress_bars):
             wmod[il], smod[il], cmod[il], central_depth[il], line_range[il], opacity[il] = self.synthesize_segment(
                 sme,
                 il,
@@ -2014,13 +2016,16 @@ class Synthesizer:
         cdr_grid_overwrite=False,
         mode='linear',
         dims=['teff', 'logg', 'monh'],
-        show_progress_bars=show_progress_bars,
+        show_progress_bars=None,
         allow_compute=True,
     ):
         '''
         Update or get the central depth and wavelength range of a line list. This version separate the parallel and non-parallel mode completely.
         Author: Mingjie Jian
         '''
+
+        if show_progress_bars is None:
+            show_progress_bars = util.show_progress_bars
 
         if chunk_size is None:
             chunk_size = getattr(
@@ -2170,7 +2175,7 @@ class Synthesizer:
         cdr_grid_overwrite=False,
         mode='linear',
         dims=['teff', 'logg', 'monh'],
-        show_progress_bars=False,
+        show_progress_bars=None,
         method="cdr",
         metric_name="central_depth",
         threshold=None,
@@ -2178,6 +2183,9 @@ class Synthesizer:
         bin_width=0.2,
         allow_compute=True,
     ):
+        if show_progress_bars is None:
+            show_progress_bars = util.show_progress_bars
+
         if method not in ("cdr", "almax"):
             raise ValueError("method must be 'cdr' or 'almax'")
 
@@ -2465,7 +2473,7 @@ class Synthesizer:
         keep[invalid_depth] = False
         return keep
 
-    def flag_strong_lines_by_bins_old(self, df, bin_width=0.2, threshold=0.01, wl_col="wlcent", depth_col="central_depth", out_col="keep_mask", show_progress_bars=show_progress_bars):
+    def flag_strong_lines_by_bins_old(self, df, bin_width=0.2, threshold=0.01, wl_col="wlcent", depth_col="central_depth", out_col="keep_mask", show_progress_bars=None):
         """
         Add a boolean 'keep_mask' column to the VALD line list indicating strong / weak lines.
 
@@ -2489,6 +2497,9 @@ class Synthesizer:
         pandas.Series (dtype=bool)
             Boolean mask aligned to `df.index`; True → strong line.
         """
+        if show_progress_bars is None:
+            show_progress_bars = util.show_progress_bars
+
         # ----- 0.  Prepare numpy views -----
         wl = df[wl_col].to_numpy()
         depth = df[depth_col].to_numpy()

@@ -21,7 +21,7 @@ from pysme.util import disable_progress_bars
 from .iliffe_vector import Iliffe_vector
 from .sme import MASK_VALUES
 from .sme_synth import SME_DLL
-from .util import show_progress_bars
+from . import util
 
 logger = logging.getLogger(__name__)
 
@@ -478,7 +478,7 @@ class ContinuumNormalizationMCMC(ContinuumNormalizationAbstract):
 
         # Now we'll sample for up to max_n steps
         with tqdm(
-            leave=False, desc="RV", total=max_n, disable=not show_progress_bars
+            leave=False, desc="RV", total=max_n, disable=not util.show_progress_bars
         ) as t:
             for _ in sampler.sample(p0, iterations=max_n):
                 t.update()
