@@ -1,13 +1,25 @@
 # -*- coding: utf-8 -*-
 # TODO implement synthesis tests
+from copy import deepcopy
+import os
 import numpy as np
 import pandas as pd
 import pytest
 
 from pysme import util
+from pysme.abund import Abund
+from pysme.atmosphere.krzfile import KrzFile
 from pysme.iliffe_vector import Iliffe_vector
+from pysme.linelist.linelist import LineList
 from pysme.sme import SME_Structure as SME_Struct
-from pysme.synthesize import Synthesizer, synthesize_spectrum
+from pysme.synthesize import (
+    Synthesizer,
+    _compute_linelist_hash,
+    _compute_almax_lineinfo_for_sme,
+    _load_lineinfo_cache_file,
+    _temporary_brackett_convolution_env,
+    synthesize_spectrum,
+)
 from .conftest import skipif_smelib
 
 
@@ -64,11 +76,27 @@ class _DummyDLL:
         self.last_wave = "unset"
         self.transf_wave = transf_wave
         self._nlines = 0
+        self.continuum_scattering_source_modes = []
 
     def SetLibraryPath(self):
         return None
 
     def InputWaveRange(self, *_):
+        return None
+
+    def InputModel(self, *_):
+        return None
+
+    def InputAbund(self, *_):
+        return None
+
+    def Ionization(self, *_):
+        return None
+
+    def SetVWscale(self, *_):
+        return None
+
+    def SetH2broad(self, *_):
         return None
 
     def Opacity(self):
@@ -77,12 +105,17 @@ class _DummyDLL:
     def SetLineInfoMode(self, *_):
         return None
 
+    def SetContinuumScatteringSourceMode(self, mode):
+        self.continuum_scattering_source_modes.append(int(mode))
+        return None
+
     def InputLineList(self, linelist):
         self._nlines = len(linelist)
         return np.zeros(self._nlines, dtype=bool)
 
     def Transf(self, mu, accrt, accwi, keep_lineop, wave=None):
         self.last_wave = wave
+        self.brackett_mode = os.environ.get("PYSME_H_STARK_CONVOLUTION")
         if wave is None:
             if self.transf_wave is None:
                 wint = np.linspace(5000.0, 5001.0, 5)
@@ -95,10 +128,15 @@ class _DummyDLL:
         return len(wint), wint, sint, cint
 
     def CentralDepth(self, mu, accrt):
+        self.central_depth_mode = os.environ.get("PYSME_H_STARK_CONVOLUTION")
         return np.zeros(0, dtype=float)
 
     def GetLineRange(self):
         return np.zeros((0, 2), dtype=float)
+
+    def ALMAXRange(self, accrt):
+        self.almax_mode = os.environ.get("PYSME_H_STARK_CONVOLUTION")
+        return np.zeros(self._nlines), np.zeros((self._nlines, 2))
 
     def GetNLTEflags(self):
         return np.zeros(self._nlines, dtype=bool)
@@ -123,6 +161,41 @@ def _set_minimal_species_linelist(sme, species):
         }
     )
     sme.line_ion_mask = np.zeros(len(species), dtype=bool)
+
+
+def _continuum_scattering_sme(cwd, spherical=False):
+    sme = SME_Struct()
+    sme.teff = 5750
+    sme.logg = 4.5
+    sme.vmic = 2.0
+    sme.vmac = 0.0
+    sme.vsini = 0.0
+    sme.abund = Abund(monh=0, pattern="asplund2009")
+    sme.linelist = LineList()
+    sme.linelist.add("Fe 1", 5502.9931, 0.9582, -3.047, 7.19, -6.22, 239.249)
+    sme.linelist.add("Cr 2", 5503.5955, 4.1682, -2.117, 8.37, -6.49, 195.248)
+    sme.atmo = KrzFile(os.path.join(cwd, "testatmo1.krz"))
+    sme.atmo.method = "embedded"
+    if spherical:
+        sme.atmo.geom = "SPH"
+        sme.atmo.radius = 10.0
+        sme.atmo.height = np.linspace(4e7, 0.0, len(sme.atmo.rhox))
+    else:
+        sme.atmo.geom = "PP"
+    sme.wran = [[5500.0, 5600.0]]
+    sme.wint = [np.linspace(5500.0, 5600.0, 41)]
+    sme.mu = [1.0]
+    sme.vrad_flag = "none"
+    sme.cscale_flag = "none"
+    sme.specific_intensities_only = True
+    return sme
+
+
+def _synthesize_continuum_with_mode(synth, sme, mode):
+    one = deepcopy(sme)
+    one.continuum_scattering_source = mode
+    out = synth.synthesize_spectrum(one, passNLTE=False)
+    return np.asarray(out.wint[0]), np.asarray(out.cint[0])
 
 
 def test_synthesize_segment_prefers_user_wint_over_cache():
@@ -166,6 +239,135 @@ def test_synthesize_segment_populates_cache_when_no_wint_available():
     assert np.allclose(synth.wint[0], np.linspace(5000.0, 5001.0, 5))
 
 
+def test_brackett_mode_is_explicit_and_environment_is_restored(monkeypatch):
+    dll = _DummyDLL()
+    synth = Synthesizer(dll=dll)
+    sme = _minimal_sme()
+    sme.h_stark_convolution = "legacy"
+    monkeypatch.setenv("PYSME_H_STARK_CONVOLUTION", "convolution")
+
+    synth.synthesize_segment(sme, 0)
+
+    assert dll.brackett_mode == "legacy"
+    assert dll.central_depth_mode == "legacy"
+    assert os.environ["PYSME_H_STARK_CONVOLUTION"] == "convolution"
+
+
+def test_brackett_environment_is_restored_after_exception(monkeypatch):
+    sme = _minimal_sme()
+    sme.h_stark_convolution = "convolution"
+    monkeypatch.setenv("PYSME_H_STARK_CONVOLUTION", "legacy")
+
+    with pytest.raises(RuntimeError):
+        with _temporary_brackett_convolution_env(sme):
+            assert os.environ["PYSME_H_STARK_CONVOLUTION"] == "convolution"
+            raise RuntimeError("native synthesis failed")
+
+    assert os.environ["PYSME_H_STARK_CONVOLUTION"] == "legacy"
+
+
+@pytest.mark.parametrize(
+    "external_value,expected",
+    [("convolution", "convolution"), ("convolutionXYZ", "legacy")],
+)
+def test_brackett_none_uses_only_exact_external_mode(monkeypatch, external_value, expected):
+    sme = _minimal_sme()
+    sme.h_stark_convolution = None
+    monkeypatch.setenv("PYSME_H_STARK_CONVOLUTION", external_value)
+
+    with _temporary_brackett_convolution_env(sme):
+        assert os.environ["PYSME_H_STARK_CONVOLUTION"] == expected
+
+    assert os.environ["PYSME_H_STARK_CONVOLUTION"] == external_value
+
+
+def test_almax_worker_scopes_brackett_mode(monkeypatch):
+    dll = _DummyDLL()
+    monkeypatch.setattr(Synthesizer, "get_dll", lambda self, dll_id=None: dll)
+    monkeypatch.setattr(Synthesizer, "get_atmosphere", lambda self, sme: sme)
+    sme = _minimal_sme()
+    sme.h_stark_convolution = "convolution"
+    sme.atmo.method = "embedded"
+    sme.linelist._lines = pd.DataFrame(
+        {"species": ["H 1"], "wlcent": [5000.0]}
+    )
+    monkeypatch.setenv("PYSME_H_STARK_CONVOLUTION", "legacy")
+
+    _compute_almax_lineinfo_for_sme(sme)
+
+    assert dll.almax_mode == "convolution"
+    assert os.environ["PYSME_H_STARK_CONVOLUTION"] == "legacy"
+
+
+def test_convolution_lineinfo_cache_is_namespaced_and_mode_checked(tmp_path):
+    sme = _minimal_sme()
+    sme.linelist._lines = pd.DataFrame(
+        {"species": ["H 1"], "wlcent": [5000.0], "atomic": [1.0]}
+    )
+    legacy_hash = _compute_linelist_hash(sme.linelist, "legacy")
+    convolution_hash = _compute_linelist_hash(sme.linelist, "convolution")
+    assert legacy_hash == _compute_linelist_hash(sme.linelist)
+    assert convolution_hash != legacy_hash
+
+    cache = tmp_path / "cdr_cache.npz"
+    np.savez_compressed(
+        cache,
+        line_info=np.array([[0.0, 0.1, 4999.9, 5000.1]]),
+        method=np.array("cdr"),
+        linelist_hash=np.array(legacy_hash),
+        n_lines_total=np.array(1),
+        h_stark_convolution=np.array("legacy"),
+    )
+    _load_lineinfo_cache_file(cache, "cdr", legacy_hash, 1, "legacy")
+    with pytest.raises(ValueError, match="h_stark_convolution mismatch"):
+        _load_lineinfo_cache_file(cache, "cdr", legacy_hash, 1, "convolution")
+
+
+@pytest.mark.parametrize("method,metric", [("cdr", "central_depth"), ("almax", "almax_ratio")])
+def test_switching_brackett_mode_invalidates_lineinfo(monkeypatch, method, metric):
+    sme = _minimal_sme()
+    sme.h_stark_convolution = "convolution"
+    sme.line_select_method = method
+    sme.line_select_policy = "strict"
+    sme.line_select_recompute = "if_stale"
+    sme.linelist._lines = pd.DataFrame(
+        {
+            "species": ["H 1"],
+            "wlcent": [5000.0],
+            metric: [0.02],
+            "line_range_s": [4999.9],
+            "line_range_e": [5000.1],
+            "strong": [True],
+        }
+    )
+    if method == "cdr":
+        sme.linelist.cdr_paras = np.array([sme.teff, sme.logg, sme.monh, sme.vmic])
+        sme.linelist.cdr_paras_h_stark_convolution = "legacy"
+    else:
+        sme.linelist.almax_paras = np.array(
+            [sme.teff, sme.logg, sme.monh, sme.vmic, sme.accrt, sme.accrt, 0.0, 0.2]
+        )
+        sme.linelist.almax_paras_h_stark_convolution = "legacy"
+
+    called = {"count": 0}
+
+    def fail_if_not_invalidated(self, sme, **kwargs):
+        called["count"] += 1
+        raise RuntimeError("mode switch invalidated line info")
+
+    monkeypatch.setattr(Synthesizer, f"update_{method}", fail_if_not_invalidated)
+    synth = Synthesizer(dll=_DummyDLL())
+
+    with pytest.raises(RuntimeError, match="mode switch"):
+        synth.synthesize_spectrum(
+            sme,
+            passAtmosphere=False,
+            passNLTE=False,
+            updateStructure=False,
+        )
+    assert called["count"] == 1
+
+
 def test_specific_intensities_only_updates_sme_and_trims_to_wran():
     dll = _DummyDLL(transf_wave=np.linspace(4999.5, 5001.5, 9))
     synth = Synthesizer(dll=dll)
@@ -195,6 +397,73 @@ def test_specific_intensities_only_updates_sme_and_trims_to_wran():
     assert w.size < 9
     assert sint.shape == (len(sme.mu), w.size)
     assert cint.shape == (len(sme.mu), w.size)
+
+
+def test_synthesize_spectrum_sets_continuum_scattering_source_mode_each_time():
+    dll = _DummyDLL(transf_wave=np.linspace(5000.0, 5001.0, 5))
+    synth = Synthesizer(dll=dll)
+    sme = _minimal_sme()
+
+    sme.continuum_scattering_source = False
+    synth.synthesize_spectrum(
+        sme,
+        segments=[0],
+        passAtmosphere=False,
+        passNLTE=False,
+    )
+    sme.continuum_scattering_source = True
+    synth.synthesize_spectrum(
+        sme,
+        segments=[0],
+        passAtmosphere=False,
+        passNLTE=False,
+    )
+    sme.continuum_scattering_source = False
+    synth.synthesize_spectrum(
+        sme,
+        segments=[0],
+        passAtmosphere=False,
+        passNLTE=False,
+    )
+
+    assert dll.continuum_scattering_source_modes == [0, 1, 0]
+
+
+@skipif_smelib
+def test_high_level_continuum_scattering_source_off_on_off_pp():
+    sme = _continuum_scattering_sme(os.path.dirname(__file__), spherical=False)
+    synth = Synthesizer()
+
+    wave_off_1, cont_off_1 = _synthesize_continuum_with_mode(synth, sme, False)
+    wave_on, cont_on = _synthesize_continuum_with_mode(synth, sme, True)
+    wave_off_2, cont_off_2 = _synthesize_continuum_with_mode(synth, sme, False)
+
+    assert np.allclose(wave_on, wave_off_1)
+    assert np.allclose(wave_off_2, wave_off_1)
+    assert np.all(np.isfinite(cont_off_1))
+    assert np.all(np.isfinite(cont_on))
+    assert np.all(np.isfinite(cont_off_2))
+    assert np.allclose(cont_off_2, cont_off_1, rtol=0, atol=0)
+    assert not np.allclose(cont_on, cont_off_1, rtol=1e-8, atol=0)
+
+
+@skipif_smelib
+def test_high_level_continuum_scattering_source_spherical_on():
+    sme = _continuum_scattering_sme(os.path.dirname(__file__), spherical=True)
+    synth = Synthesizer()
+
+    wave_off, cont_off = _synthesize_continuum_with_mode(synth, sme, False)
+    wave_on, cont_on = _synthesize_continuum_with_mode(synth, sme, True)
+    wave_off_2, cont_off_2 = _synthesize_continuum_with_mode(synth, sme, False)
+
+    assert np.allclose(wave_on, wave_off)
+    assert np.allclose(wave_off_2, wave_off)
+    assert cont_on.shape == cont_off.shape
+    assert np.all(np.isfinite(cont_off))
+    assert np.all(np.isfinite(cont_on))
+    assert np.all(np.isfinite(cont_off_2))
+    assert np.allclose(cont_off_2, cont_off, rtol=0, atol=0)
+    assert not np.allclose(cont_on, cont_off, rtol=1e-8, atol=0)
 
 
 def test_profile_nlte_h_summary_uses_default_provider(monkeypatch):

@@ -247,10 +247,17 @@ class SME_Structure(Parameters):
         ("cscale_gtol", 1e-8, asfloat, this, "float: tolerance for the continuum least squares fit"),
         ("normalize_by_continuum", True, asbool, this,
             "bool: Whether to normalize the synthetic spectrum by the synthetic continuum spectrum or not"),
+        ("continuum_scattering_source", False, asbool, this,
+            "bool: Whether to include coherent continuum scattering "
+            "in the continuum source function"),
         ("specific_intensities_only", False, asbool, this,
             "bool: Whether to keep the specific intensities or integrate them together"),
         ("gam6", 1, asfloat, this, "float: van der Waals scaling factor"),
         ("h2broad", True, asbool, this, "bool: Whether to use H2 broadening or not"),
+        ("h_stark_convolution", "legacy", lowercase(oneof(None, "legacy", "convolution")), this,
+            "str or None: Brackett Stark profile construction; 'legacy' keeps "
+            "the additive profile and 'convolution' enables the shared-support "
+            "convolution for Brackett lines with upper level m >= 10"),
         ("accwi", 3e-3, asfloat, this,
             "float: minimum accuracy for linear spectrum interpolation vs. wavelength."),
         ("accrt", 1e-4, asfloat, this,

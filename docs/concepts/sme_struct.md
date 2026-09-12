@@ -82,6 +82,10 @@ from IDL SME. It is recommend however to use the new variables.
     If not provided, PySME can reuse an internal cached adaptive grid
     when `reuse_wavelength_grid=True`; otherwise SMElib computes a new
     adaptive grid.
+:continuum_scattering_source:
+    Boolean flag controlling whether coherent continuum scattering is included in the continuum source function during synthesis.
+    The default is `False`, which keeps the historical PySME behavior.
+    Set this to `True` to use the opt-in continuum-scattering source treatment for plane-parallel and spherical atmospheres.
 
 
 ## Abundance
@@ -158,6 +162,16 @@ For more information see [system_info](../concepts/system_info.md).
 
 :gam6: van der Waals scaling factor (usually 1)
 :h2broad: flag determing whether to use H2 broadening or not (usually True)
+:h_stark_convolution:
+    Brackett Stark-profile construction.
+    The default `legacy` mode preserves previous results.
+    Enable the convolution for Br10 and higher with:
+
+    ```python
+    sme.h_stark_convolution = "convolution"
+    ```
+
+    See the [SMElib v6.13.18 Brackett documentation](https://github.com/SpectroscopyMadeEasy/SMElib/blob/v6.13.18/docs/brackett_stark_convolution.md) for its scope and validation.
 :accrt:
     Minimum accuracy for synthethized spectrum at wavelength grid
     points in `sme.wint` (or SMElib adaptive grid if `sme.wint` is not set).
