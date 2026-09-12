@@ -1574,6 +1574,9 @@ class Synthesizer:
 
         # Input Model data to C library
         dll.SetLibraryPath()
+        dll.SetContinuumScatteringSourceMode(
+            int(sme.continuum_scattering_source)
+        )
         if passLineList:
             linelist_for_smelib = sme.linelist
             if linelist_mode == "dynamic":
@@ -1707,7 +1710,7 @@ class Synthesizer:
         # For testing wavegrid
         sme.wmod = wmod.copy()
         sme.smod = smod.copy()
-        sme.comd = cmod.copy()
+        sme.cmod = cmod.copy()
         sme.opacity = opacity.copy()
 
         # Fit continuum and radial velocity
@@ -1876,8 +1879,8 @@ class Synthesizer:
         #     dll.SetH2broad(sme.h2broad)
 
         # if passNLTE:
-        #     sme.nlte.update_coefficients(sme, dll, self.lfs_nlte, sme.first_segment)        
-        
+        #     sme.nlte.update_coefficients(sme, dll, self.lfs_nlte, sme.first_segment)
+
         # Priority for wavelength grid passed to SMElib:
         # 1) user-provided sme.wint for this segment
         # 2) internal cache when reuse_wavelength_grid=True
@@ -1898,11 +1901,12 @@ class Synthesizer:
         else:
             wint_seg = None
 
-        # Only calculate line opacities in the first segment
-        #   Calculate spectral synthesis for each
         with _temporary_brackett_convolution_env(sme):
             dll.InputWaveRange(wbeg-2, wend+2)
             dll.Opacity()
+
+            # Only calculate line opacities in the first segment
+            #   Calculate spectral synthesis for each
             _, wint, sint, cint = dll.Transf(
                 sme.mu,
                 accrt=sme.accrt,  # threshold line opacity / cont opacity
@@ -1913,7 +1917,14 @@ class Synthesizer:
 
         # Insert the new 3DNLTE correction
         if self._is_profile_nlte_h_applied(sme):
-            interpolator = interp1d(util.lambda_H_3DNLTE, sme.tdnlte_H_correction, kind="linear", fill_value=1, bounds_error=False, assume_sorted=True)
+            interpolator = interp1d(
+                sme.tdnlte_H_correction[0],
+                sme.tdnlte_H_correction[1],
+                kind="linear",
+                fill_value=1,
+                bounds_error=False,
+                assume_sorted=True,
+            )
             correction_3dnlte_H_interp = interpolator(wint)
 
             sint *= correction_3dnlte_H_interp
@@ -2665,7 +2676,7 @@ class Synthesizer:
     def get_H_3dnlte_correction_rbf(self, sme):
         """
         Compute the 3D NLTE correction factor for hydrogen lines, using RBF interpolator and in intensities.
-    
+
         """
 
         logger.info(f"Getting H 3dnlte correction using RBF")
