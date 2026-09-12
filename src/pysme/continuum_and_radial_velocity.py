@@ -405,8 +405,7 @@ class ContinuumNormalizationMCMC(ContinuumNormalizationAbstract):
             if rv.shape[1] == 1 and nseg > 1:
                 rv = np.tile(rv, [1, nseg])
             if cflag:
-                cs = par[:, sep:]
-                cs.shape = nwalkers, nseg, ndeg + 1
+                cs = par[:, sep:].reshape(nwalkers, nseg, ndeg + 1)
             else:
                 cs = cscale[None, ...]
 
@@ -517,7 +516,10 @@ class ContinuumNormalizationMCMC(ContinuumNormalizationAbstract):
 
         if cflag:
             vmin, cscale, vmax = np.percentile(samples[:, sep:], (32, 50, 68), axis=0)
-            vmin.shape = cscale.shape = vmax.shape = nseg, ndeg + 1
+            shape = (nseg, ndeg + 1)
+            vmin = vmin.reshape(shape)
+            cscale = cscale.reshape(shape)
+            vmax = vmax.reshape(shape)
 
             cscale_unc[..., 0] = cscale - vmin
             cscale_unc[..., 1] = vmax - cscale

@@ -1,7 +1,15 @@
 # Changelog
 
+## 2026-09-09
+
+- Added `sme.h_stark_convolution = "convolution"` for Br10 and higher.
+  The default remains `"legacy"`.
+  See the [SMElib v6.13.18 documentation](https://github.com/SpectroscopyMadeEasy/SMElib/blob/v6.13.18/docs/brackett_stark_convolution.md).
+
 ## 2026-06-26
 
+- Added an opt-in continuum-scattering source treatment for plane-parallel and
+  spherical atmospheres using a constant-Eddington-factor moment approximation.
 - Fixed the H NLTE abundance-coordinate handling so the standard hydrogen NLTE
   abundance coordinate remains stable during synthesis.
 - Fixed free-abundance fitting to use the correct internal abundance-pattern
