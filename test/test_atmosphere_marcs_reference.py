@@ -11,6 +11,7 @@ from pysme.atmosphere.interpolation import AtmosphereInterpolator
 from .test_largefilestorage import lfs_atmo, skipif_lfs
 
 SPHERICAL_GRID_NAME = "marcs2014.sav"
+# Exact off-grid MARCS model computed by Nils Ryde using the MARCS code.
 REFERENCE_LIS_PATH = Path(__file__).parent / "5035g2.96z-0.74m1.0t1_new.lis"
 TARGET_TEFF = 5035.0
 TARGET_LOGG = 2.96
