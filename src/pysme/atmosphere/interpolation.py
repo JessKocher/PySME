@@ -81,6 +81,7 @@ class RbfGrid:
         self.logg_step_scale = 1.0
         self.met_step_scale = 1.0
         self.gridpoints = None
+        self._rbf_degree = None # Set by self.initialize_gridpoints()
         # set by self.initialize_tags():
         self.vtags = None
         self.stags = None
@@ -159,7 +160,10 @@ class RbfGrid:
     def build_interpolator(self):
         """Build the RBFInterpolator over the whole grid, once, for reuse across queries."""
         grid_points = np.vstack((self.teffs, self.loggs, self.mets)).T
-        return RBFInterpolator(grid_points, self.array_for_interpol, neighbors=self._RBF_NEIGHBORS)
+        kwargs = {} if self._rbf_degree is None else {"degree": self._rbf_degree}
+        return RBFInterpolator(
+            grid_points, self.array_for_interpol, neighbors=self._RBF_NEIGHBORS, **kwargs
+        )
 
     def to_interp_space_vector(self, vtag, values, atmo):
         """
@@ -213,6 +217,16 @@ class RbfGrid:
         teff_step_original = self._min_step(temp_teffs)
         logg_step_original = self._min_step(temp_loggs)
         met_step_original = self._min_step(temp_mets)
+
+        # RBFInterpolator's default (degree=1) polynomial includes a linear
+        # term per axis; if any axis has a single value grid-wide (e.g. a
+        # spherical grid with only one metallicity), that axis's column is
+        # constant and collinear with the constant term, making the
+        # polynomial matrix singular. Dropping to degree=0 (constant term
+        # only) sidesteps this - only relevant when an axis is degenerate,
+        # so normal (3-axis-varying) grids keep the default degree.
+        if len(temp_teffs) < 2 or len(temp_loggs) < 2 or len(temp_mets) < 2:
+            self._rbf_degree = 0
 
         self.teff_step_scale = round(1/teff_step_original * self._TEFF_WEIGHT,4) # weighs Teff as more important / "closer" when selecting neighbors
         self.logg_step_scale = round(1/logg_step_original * self._LOGG_WEIGHT,4) # weighs logg as less important / further away when selecting neighbors
@@ -304,14 +318,14 @@ class RbfGrid:
     def _realized_abund_h12(self, relevant_atmo):
         """
         Fully-realized (metallicity-baked-in) abundance pattern for one grid
-        atmosphere, converted to the H=12 scale. The grid's raw abundance
-        values already include that model's own metallicity (verified
-        against real MARCS grid data: metal abundances shift dex-for-dex
-        with [M/H]), so this is used as-is - no metallicity needs to be
-        added or removed here.
+        atmosphere, converted to the H=12 scale. ``relevant_atmo["abund"]``
+        is already an ``Abund`` instance (Atmosphere builds it from the raw
+        grid field on access), whose internal ``_pattern`` is exactly this
+        realized H=12 pattern (verified against real MARCS grid data: metal
+        abundances shift dex-for-dex with [M/H]) - no metallicity needs to
+        be added or removed here.
         """
-        raw_pattern = np.array(relevant_atmo["abund"], dtype=float, copy=True)
-        return Abund(monh=relevant_atmo["monh"], pattern=raw_pattern, type=self.abund_format)._pattern
+        return np.array(relevant_atmo["abund"]._pattern, dtype=float, copy=True)
 
 
 class AtmosphereInterpolator:
@@ -519,7 +533,17 @@ class AtmosphereInterpolator:
         # consistent with the interpolated "monh" above.
         abund_offset = len(rbf_grid.vtags) * rbf_grid.depthpoints + len(rbf_grid.stags)
         interpolated_pattern = target_vector[abund_offset:]
-        atmo.abund = Abund(monh=0, pattern=interpolated_pattern, type="H=12")
+        # atmo.monh was already set above (it's one of rbf_grid.stags) and,
+        # since Atmosphere.monh is a passthrough to atmo.abund.monh, it would
+        # otherwise be silently reset to 0 by replacing atmo.abund below -
+        # capture it first and carry it over to the new Abund. This does not
+        # reintroduce double-counting: the pattern is already fully realized,
+        # and get_pattern_abundance() (unlike Abund.__call__/__repr__) never
+        # applies .monh on top of it - matching how a real grid atmosphere's
+        # Abund object already stores both its own realized pattern and its
+        # own (redundant, non-additive) monh value.
+        interpolated_monh = atmo.monh
+        atmo.abund = Abund(monh=interpolated_monh, pattern=interpolated_pattern, type="H=12")
 
         return atmo
 
