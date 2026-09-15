@@ -100,6 +100,18 @@ class RbfGrid:
         self.read_in_grid(sav_grid) # Stores all data in self.array_for_interpol
         self.interpolator = self.build_interpolator()
 
+    @staticmethod
+    def _min_step(sorted_unique_vals, fallback=1.0):
+        """
+        Smallest gap between consecutive sorted unique values, or ``fallback``
+        if there's only one value. A single-value axis (e.g. a spherical grid
+        with only one metallicity) has no gaps to measure, but its scale
+        constant is irrelevant anyway since every grid point shares that
+        coordinate and it can't affect relative distances between them.
+        """
+        diffs = np.abs(sorted_unique_vals[1:] - sorted_unique_vals[:-1])
+        return np.min(diffs) if diffs.size > 0 else fallback
+
     def build_interpolator(self):
         """Build the RBFInterpolator over the whole grid, once, for reuse across queries."""
         grid_points = np.vstack((self.teffs, self.loggs, self.mets)).T
@@ -150,10 +162,10 @@ class RbfGrid:
         self.grid_mets = np.array(grid_mets)
 
         # Scale s.t. all step sizes match, except for a slight scaling that will prefer teff over met over logg steps when all would otherwise be equidistant
-        teff_step_original = np.min(abs(temp_teffs[1:] - temp_teffs[:-1])) 
-        logg_step_original = np.min(abs(temp_loggs[1:] - temp_loggs[:-1])) 
         temp_mets = np.array(sorted(np.unique(grid_mets)))
-        met_step_original = np.min(abs(temp_mets[1:] - temp_mets[:-1])) 
+        teff_step_original = self._min_step(temp_teffs)
+        logg_step_original = self._min_step(temp_loggs)
+        met_step_original = self._min_step(temp_mets)
 
         self.teff_step_scale = round(1/teff_step_original * self._TEFF_WEIGHT,4) # weighs Teff as more important / "closer" when selecting neighbors
         self.logg_step_scale = round(1/logg_step_original * self._LOGG_WEIGHT,4) # weighs logg as less important / further away when selecting neighbors
