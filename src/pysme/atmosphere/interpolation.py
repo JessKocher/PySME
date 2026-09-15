@@ -237,16 +237,40 @@ class RbfGrid:
         Read every grid atmosphere's ``vtags``/``stags`` fields, convert them
         via ``to_interp_space_vector``/``to_interp_space_scalar``, and stack
         them into ``self.array_for_interpol`` (one flattened row per grid
-        point: all vector fields concatenated, followed by the scalars). This
-        is the array the RBF interpolant is fit to.
+        point: all vector fields concatenated, then the scalars, then the
+        fully-realized H=12 abundance pattern). This is the array the RBF
+        interpolant is fit to.
+
+        The abundance pattern is appended as a plain (untransformed) block
+        rather than a vtag: it's already logarithmic and isn't
+        ``depthpoints`` long. Since ``RBFInterpolator`` applies the same
+        local weights to every output column, interpolating the realized
+        pattern directly keeps it automatically consistent with the
+        separately-interpolated "monh" stag - no extra rescaling needed.
         """
-        self.array_for_interpol = np.zeros(dtype='float64',shape=(self.gridpoints, len(self.vtags)*self.depthpoints + len(self.stags)))
+        self.n_abund = sav_grid["abund"].shape[-1]
+        abund_offset = len(self.vtags) * self.depthpoints + len(self.stags)
+        width = abund_offset + self.n_abund
+        self.array_for_interpol = np.zeros(dtype='float64', shape=(self.gridpoints, width))
         for i in range(self.gridpoints): # Loop over all atmospheres
             relevant_atmo = sav_grid[(sav_grid['teff'] == self.grid_teffs[i]) & (sav_grid['logg'] == self.grid_loggs[i]) & (sav_grid['monh'] == self.grid_mets[i])]
             for n, vtag in enumerate(self.vtags): # Read in vectors
                 self.array_for_interpol[i,n*self.depthpoints:(n+1)*self.depthpoints] = self.to_interp_space_vector(vtag, relevant_atmo[vtag][:self.depthpoints], relevant_atmo)
             for s, stag in enumerate(self.stags): # Read in scalars
                 self.array_for_interpol[i,len(self.vtags)*self.depthpoints + s] = self.to_interp_space_scalar(stag, relevant_atmo[stag])
+            self.array_for_interpol[i, abund_offset:] = self._realized_abund_h12(relevant_atmo)
+
+    def _realized_abund_h12(self, relevant_atmo):
+        """
+        Fully-realized (metallicity-baked-in) abundance pattern for one grid
+        atmosphere, converted to the H=12 scale. The grid's raw abundance
+        values already include that model's own metallicity (verified
+        against real MARCS grid data: metal abundances shift dex-for-dex
+        with [M/H]), so this is used as-is - no metallicity needs to be
+        added or removed here.
+        """
+        raw_pattern = np.array(relevant_atmo["abund"], dtype=float, copy=True)
+        return Abund(monh=relevant_atmo["monh"], pattern=raw_pattern, type=self.abund_format)._pattern
 
 
 class AtmosphereInterpolator:
@@ -419,11 +443,10 @@ class AtmosphereInterpolator:
         for n, vtag in enumerate(rbf_grid.vtags): # Read out vectors
             atmo[vtag] = from_interp_space_vector(vtag, target_vector[n * rbf_grid.depthpoints : (n+1) * rbf_grid.depthpoints], atmo)
 
-        # opflag, wlstd, and the abundance pattern aren't part of the RBF fit
-        # (they're administrative/compositional, not smoothly varying physical
-        # structure), so copy them from the nearest grid point instead, the
-        # same way the standard corner-model path copies them verbatim rather
-        # than interpolating them.
+        # opflag and wlstd are administrative fields, not smoothly varying
+        # physical structure, so copy them from the nearest grid point
+        # instead - the same way the standard corner-model path copies them
+        # verbatim rather than interpolating them.
         nearest = np.argmin(
             (rbf_grid.teffs - target_params[0]) ** 2
             + (rbf_grid.loggs - target_params[1]) ** 2
@@ -431,8 +454,16 @@ class AtmosphereInterpolator:
         )
         atmo.opflag = rbf_grid.sav_grid["opflag"][nearest]
         atmo.wlstd = rbf_grid.sav_grid["wlstd"][nearest]
-        nearest_pattern = np.array(rbf_grid.sav_grid["abund"][nearest], dtype=float, copy=True)
-        atmo.abund = Abund(monh=atmo.monh, pattern=nearest_pattern, type=rbf_grid.abund_format)
+
+        # The abundance pattern, unlike opflag/wlstd, does vary smoothly (it's
+        # metallicity- and enhancement-dependent), so it's part of the RBF fit
+        # itself (see read_in_grid/_realized_abund_h12) rather than copied
+        # from the nearest point - interpolating the realized pattern with
+        # the same local weights used everywhere else keeps it automatically
+        # consistent with the interpolated "monh" above.
+        abund_offset = len(rbf_grid.vtags) * rbf_grid.depthpoints + len(rbf_grid.stags)
+        interpolated_pattern = target_vector[abund_offset:]
+        atmo.abund = Abund(monh=0, pattern=interpolated_pattern, type="H=12")
 
         return atmo
 
