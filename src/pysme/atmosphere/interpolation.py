@@ -94,6 +94,12 @@ class RbfGrid:
         if not isinstance(sav_grid, AtmosphereGrid):
             raise AtmosphereError("Rbf initialization was requested but no sav-grid was provided")
 
+        # Kept so interpolate_RBF can look up the nearest grid point's
+        # administrative fields (opflag, wlstd, abundance pattern) that aren't
+        # part of the RBF fit itself.
+        self.sav_grid = sav_grid
+        self.abund_format = getattr(sav_grid, "abund_format", "sme")
+
         self.initialize_gridpoints(sav_grid) # read in and scale teff, logg, and metallicity of the grid
         self.vtags, self.stags = self.initialize_tags(sav_grid, geometry) # Check if e.g. height and radius are used
         self.depthpoints = self.initialize_depth(sav_grid) # Set self.depthpoints
@@ -412,7 +418,22 @@ class AtmosphereInterpolator:
             atmo[stag] = from_interp_space_scalar(stag, target_vector[len(rbf_grid.vtags)*rbf_grid.depthpoints + s])
         for n, vtag in enumerate(rbf_grid.vtags): # Read out vectors
             atmo[vtag] = from_interp_space_vector(vtag, target_vector[n * rbf_grid.depthpoints : (n+1) * rbf_grid.depthpoints], atmo)
-        
+
+        # opflag, wlstd, and the abundance pattern aren't part of the RBF fit
+        # (they're administrative/compositional, not smoothly varying physical
+        # structure), so copy them from the nearest grid point instead, the
+        # same way the standard corner-model path copies them verbatim rather
+        # than interpolating them.
+        nearest = np.argmin(
+            (rbf_grid.teffs - target_params[0]) ** 2
+            + (rbf_grid.loggs - target_params[1]) ** 2
+            + (rbf_grid.mets - target_params[2]) ** 2
+        )
+        atmo.opflag = rbf_grid.sav_grid["opflag"][nearest]
+        atmo.wlstd = rbf_grid.sav_grid["wlstd"][nearest]
+        nearest_pattern = np.array(rbf_grid.sav_grid["abund"][nearest], dtype=float, copy=True)
+        atmo.abund = Abund(monh=atmo.monh, pattern=nearest_pattern, type=rbf_grid.abund_format)
+
         return atmo
 
     def interp_atmo_pair(self, atmo1, atmo2, frac, interpvar="RHOX", itop=0):
