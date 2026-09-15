@@ -55,3 +55,15 @@ def test_rbf_cache_invalidated_on_source_change():
     assert np.allclose(atmo_a.temp, 5000.0)
     assert np.allclose(atmo_b.temp, atmo_b_fresh.temp)
     assert not np.allclose(atmo_b.temp, atmo_a.temp)
+
+
+def test_rbf_handles_single_valued_metallicity_axis():
+    # A single metallicity value (like the real spherical MARCS grid) must
+    # not crash the per-axis step-size computation in initialize_gridpoints.
+    grid = _make_synthetic_grid(
+        "single_monh_grid", teffs=[4900.0, 5100.0], loggs=[3.8, 4.2], monhs=[0.0],
+        temp_value=5000.0,
+    )
+    interpolator = AtmosphereInterpolator(interp="RBF")
+    atmo = interpolator.interp_atmo_grid(grid, 5000.0, 4.0, 0.0)
+    assert np.all(np.isfinite(atmo.temp))
