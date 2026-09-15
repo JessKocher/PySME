@@ -243,6 +243,7 @@ class AtmosphereInterpolator:
         self.source = None
         self.atmo_grid = None
         self.rbf_grid = None
+        self.rbf_grid_key = None
         self.verbose = verbose
 
     def interp_atmo_grid(self, atmo_grid, teff, logg, monh):
@@ -302,8 +303,10 @@ class AtmosphereInterpolator:
 
         #### Option 1: if atmo_interp is rbf, call alternative method
         if interp == "RBF":
-            if not isinstance(self.rbf_grid, RbfGrid): # check if we have an rbf grid initialized already:
+            rbf_key = (self.source, self.geom)
+            if not isinstance(self.rbf_grid, RbfGrid) or self.rbf_grid_key != rbf_key:
                 self.rbf_grid = RbfGrid(atmo_grid, self.geom)
+                self.rbf_grid_key = rbf_key
             rbf_grid = self.rbf_grid
             atmo = self.interpolate_RBF(teff, logg, monh, rbf_grid)
             if self.geom == "SPH":
