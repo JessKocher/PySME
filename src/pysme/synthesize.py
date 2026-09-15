@@ -220,6 +220,24 @@ def _same_path(a, b):
     )
 
 
+def _iter_exception_chain(exc):
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        yield current
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+
+
+def _is_parallel_environment_error(exc):
+    for current in _iter_exception_chain(exc):
+        if isinstance(current, PermissionError):
+            return True
+        if isinstance(current, OSError) and getattr(current, "errno", None) in {1, 13, 38}:
+            return True
+    return False
+
+
 def _normalize_line_precompute_database_arg(
     line_precompute_database=None,
     cdr_database=None,
@@ -2055,6 +2073,7 @@ class Synthesizer:
         n_jobs = int(max(1, n_jobs))
         if n_jobs < 2:
             parallel = False
+        policy = str(getattr(sme, "line_select_policy", "auto")).lower()
         if worker_output is None:
             pysme_out = bool(getattr(sme, "cdr_pysme_out", False))
         else:
@@ -2110,14 +2129,21 @@ class Synthesizer:
             sub_sme_init.line_select_policy = "auto"
             sub_sme_init.line_select_recompute = "if_stale"
 
-            if not parallel:
+            def _run_serial_cdr(sub_sme_template):
+                stack_linelist_local = None
                 for i in tqdm(range(N_chunk), disable=not show_progress_bars):
-                    sub_sme_init.linelist = sub_linelist[i]
-                    sub_sme_init = self.synthesize_spectrum(sub_sme_init)
+                    sub_sme_template.linelist = sub_linelist[i]
+                    sub_sme_template = self.synthesize_spectrum(sub_sme_template)
                     if i == 0:
-                        stack_linelist = deepcopy(sub_sme_init.linelist)
+                        stack_linelist_local = deepcopy(sub_sme_template.linelist)
                     else:
-                        stack_linelist._lines = pd.concat([stack_linelist._lines, sub_sme_init.linelist._lines])
+                        stack_linelist_local._lines = pd.concat(
+                            [stack_linelist_local._lines, sub_sme_template.linelist._lines]
+                        )
+                return stack_linelist_local
+
+            if not parallel:
+                stack_linelist = _run_serial_cdr(sub_sme_init)
             else:
                 sub_sme = []
                 sub_sme_init.linelist = sme.linelist[:1]
@@ -2126,17 +2152,45 @@ class Synthesizer:
                     sub_sme.append(deepcopy(sub_sme_init))
                     sub_sme[i].linelist = sub_linelist[i]
 
-                if pysme_out:
-                    sub_sme = pqdm(sub_sme, self.synthesize_spectrum, n_jobs=n_jobs, disable=not show_progress_bars)
-                else:
-                    with redirect_stdout(open(f"/dev/null", 'w')):
+                try:
+                    if pysme_out:
                         sub_sme = pqdm(sub_sme, self.synthesize_spectrum, n_jobs=n_jobs, disable=not show_progress_bars)
-                
-                for i in range(N_chunk):
-                    sub_linelist[i] = sub_sme[i].linelist
-                stack_linelist = deepcopy(sub_linelist[0])
-                stack_linelist._lines = pd.concat([ele._lines for ele in sub_linelist])  
-                # logger.info(f'{sub_linelist}')
+                    else:
+                        with open(os.devnull, "w") as devnull:
+                            with redirect_stdout(devnull):
+                                sub_sme = pqdm(
+                                    sub_sme,
+                                    self.synthesize_spectrum,
+                                    n_jobs=n_jobs,
+                                    disable=not show_progress_bars,
+                                )
+                except Exception as exc:
+                    if not _is_parallel_environment_error(exc):
+                        raise
+                    if policy == "strict":
+                        raise RuntimeError(
+                            "Parallel CDR line selection failed in this environment. "
+                            "Set line_select_parallel=False or use line_select_policy='auto' "
+                            "to allow serial fallback."
+                        ) from exc
+                    warnings.warn(
+                        "Parallel CDR line selection is unavailable in this environment; "
+                        "falling back to serial execution.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    logger.warning(
+                        "[cdr] Parallel line selection failed with %s; falling back to serial.",
+                        exc,
+                        exc_info=True,
+                    )
+                    stack_linelist = _run_serial_cdr(sub_sme_init)
+                else:
+                    for i in range(N_chunk):
+                        sub_linelist[i] = sub_sme[i].linelist
+                    stack_linelist = deepcopy(sub_linelist[0])
+                    stack_linelist._lines = pd.concat([ele._lines for ele in sub_linelist])
+                    # logger.info(f'{sub_linelist}')
 
             # Remove
             if len(stack_linelist) != len(sme.linelist):

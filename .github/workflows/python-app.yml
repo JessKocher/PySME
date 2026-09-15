@@ -154,11 +154,21 @@ jobs:
           setup_nlte().get("nlte_Na_multi_sun.grd")
           PY
 
-      - name: Prefetch atmosphere grid
+      - name: Prefetch Ca NLTE test grid
+        run: |
+          python - <<'PY'
+          from pysme.large_file_storage import setup_nlte
+          setup_nlte().get("marcs2012p_t1.0_Ca.grd")
+          PY
+
+      - name: Prefetch atmosphere grids
         run: |
           python - <<'PY'
           from pysme.large_file_storage import setup_atmo
-          setup_atmo().get("marcs2012.sav")
+          storage = setup_atmo()
+          storage.get("marcs2012.sav")
+          storage.get("marcs2012p_t2.0.sav")
+          storage.get("marcs2014.sav")
           PY
 
       - name: Build checked-out SMElib
@@ -288,11 +298,21 @@ jobs:
           setup_nlte().get("nlte_Na_multi_sun.grd")
           PY
 
-      - name: Prefetch atmosphere grid
+      - name: Prefetch Ca NLTE test grid
+        run: |
+          python - <<'PY'
+          from pysme.large_file_storage import setup_nlte
+          setup_nlte().get("marcs2012p_t1.0_Ca.grd")
+          PY
+
+      - name: Prefetch atmosphere grids
         run: |
           python - <<'PY'
           from pysme.large_file_storage import setup_atmo
-          setup_atmo().get("marcs2012.sav")
+          storage = setup_atmo()
+          storage.get("marcs2012.sav")
+          storage.get("marcs2012p_t2.0.sav")
+          storage.get("marcs2014.sav")
           PY
 
       - name: Build checked-out SMElib
