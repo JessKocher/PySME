@@ -2,14 +2,39 @@
 """Tests for the RBF-based atmosphere-grid interpolation path (RbfGrid/interpolate_RBF)."""
 import numpy as np
 
-from pysme.abund import Abund
+from pysme.abund import Abund, elements_dict
 from pysme.atmosphere.atmosphere import AtmosphereGrid
 from pysme.atmosphere.interpolation import AtmosphereInterpolator
+
+# Approximate solar photospheric abundances (H=12 scale), in the standard
+# element order (H, He, Li, Be, B, C, N, O, ...). Illustrative values in the
+# same ballpark as Grevesse & Sauval (1998)/Asplund et al. (2009) - not a
+# citation-grade table, just realistic enough that test fixtures don't look
+# like an arbitrary constant. NaN marks elements with no well-established
+# solar value (unstable isotopes Tc/Pm, or heavy elements beyond Bi besides
+# Th/U), matching how a real solar pattern leaves them untracked.
+_SOLAR_H12 = np.array([
+    12.00, 10.93,                                                  # H, He
+    1.05, 1.38, 2.70, 8.43, 7.83, 8.69, 4.56, 7.93,                 # Li-Ne
+    6.24, 7.60, 6.45, 7.51, 5.41, 7.12, 5.50, 6.40,                 # Na-Ar
+    5.03, 6.34, 3.15, 4.95, 3.93, 5.64, 5.43, 7.50,                 # K-Fe
+    4.99, 6.22, 4.19, 4.56, 3.04, 3.65, 2.30, 3.34,                 # Co-Se
+    2.54, 3.25, 2.52, 2.87, 2.21, 2.58, 1.46, 1.88,                 # Br-Mo
+    np.nan, 1.75, 0.91, 1.57, 0.94, 1.71, 0.80, 2.04,               # Tc-Sn
+    1.01, 2.18, 1.55, 2.24, 1.08, 2.18, 1.10, 1.58,                 # Sb-Ce
+    0.72, 1.42, np.nan, 0.96, 0.52, 1.07, 0.30, 1.10,               # Pr-Dy
+    0.48, 0.92, 0.10, 0.84, 0.10, 0.85, -0.12, 0.85,                # Ho-W
+    0.26, 1.40, 1.38, 1.62, 0.92, 1.17, 0.90, 1.75,                 # Re-Pb
+    0.65, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, 0.02,     # Bi-Th
+    np.nan, -0.54, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan,  # Pa-Cf
+    np.nan,                                                         # Es
+])
+assert len(_SOLAR_H12) == 99
 
 
 def _make_synthetic_grid(
     source, teffs, loggs, monhs, temp_value, ndep=3, geom="PP",
-    opflag_value=1, wlstd_value=5000.0, metal_abund=-5.0,
+    opflag_value=1, wlstd_value=5000.0, abund_shift=0.0,
 ):
     """
     Build a tiny in-memory AtmosphereGrid spanning the Cartesian product of
@@ -18,12 +43,12 @@ def _make_synthetic_grid(
     placeholder - enough for RbfGrid to build an interpolator, using the same
     field-assignment convention SavFile uses when loading a real grid.
 
-    ``metal_abund`` sets every metal (index 2+) of the "sme"-format abundance
-    pattern to the same value, or - if given as a callable - to
-    ``metal_abund(monh)`` per grid point (for tests that need abundance to
-    vary with metallicity). Index 0 (H) and 1 (He) are always set to
-    realistic positive fractions, since "sme" format requires H's fraction to
-    be positive (it's log10'd during the sme -> H=12 conversion).
+    The abundance pattern is realistic solar (``_SOLAR_H12``) with
+    ``abund_shift`` added to the metals (index 2+) - a constant, or, for
+    tests that need abundance to vary with metallicity, a callable of monh
+    (mimicking a realized, metallicity-baked-in pattern: solar + monh).
+    Stored in "sme" format (via ``Abund.totype``) like a real grid, so
+    reading it back through ``_realized_abund_h12`` round-trips correctly.
     """
     combos = [(t, g, m) for t in teffs for g in loggs for m in monhs]
     natmo = len(combos)
@@ -44,10 +69,11 @@ def _make_synthetic_grid(
     grid["xna"] = 1.0
     grid["xne"] = 1.0
     grid["opflag"] = opflag_value
-    grid["abund"][:, 0] = 0.92
-    grid["abund"][:, 1] = 0.078
     for i, (_, _, m) in enumerate(combos):
-        grid["abund"][i, 2:] = metal_abund(m) if callable(metal_abund) else metal_abund
+        shift = abund_shift(m) if callable(abund_shift) else abund_shift
+        intended_h12 = _SOLAR_H12.copy()
+        intended_h12[2:] += shift
+        grid["abund"][i] = Abund.totype(intended_h12, "sme", raw=True)
     if geom == "SPH":
         grid["height"] = np.tile(np.linspace(0.0, 1.0, ndep), (natmo, 1))
     return grid
@@ -99,15 +125,14 @@ def test_rbf_preserves_opflag_and_wlstd():
 
 
 def test_rbf_abundance_stays_consistent_with_interpolated_metallicity():
-    # Every grid point's metal abundance is set to exactly base + its own
-    # monh (a stand-in for a realized, metallicity-baked-in pattern, as
-    # confirmed against the real marcs2014.sav grid). teff/logg are
-    # irrelevant to the abundance here, only monh matters.
-    base = -5.0
+    # Every grid point's abundance is solar shifted by exactly its own monh
+    # (a stand-in for a realized, metallicity-baked-in pattern, as confirmed
+    # against the real marcs2014.sav grid). teff/logg are irrelevant to the
+    # abundance here, only monh matters.
     teffs, loggs, monhs = [4900.0, 5100.0], [3.8, 4.2], [-2.0, -1.0, 0.0]
     grid = _make_synthetic_grid(
         "abundance_grid", teffs, loggs, monhs, temp_value=5000.0,
-        metal_abund=lambda monh: base + monh,
+        abund_shift=lambda monh: monh,
     )
     interpolator = AtmosphereInterpolator(interp="RBF")
 
@@ -121,11 +146,6 @@ def test_rbf_abundance_stays_consistent_with_interpolated_metallicity():
     # monh - this is the actual bug fix under test: the returned abundance
     # must reflect the atmosphere's own reported metallicity, not whichever
     # grid point happened to be nearest.
-    expected_metal_sme = base + atmo.monh
-    expected = Abund(
-        monh=0, pattern=np.array([0.92, 0.078] + [expected_metal_sme] * 97), type="sme"
-    )
+    expected_fe = _SOLAR_H12[elements_dict["Fe"]] + atmo.monh
 
-    assert np.isclose(
-        atmo.abund.get_pattern_abundance("Fe"), expected.get_pattern_abundance("Fe"), atol=1e-6
-    )
+    assert np.isclose(atmo.abund.get_pattern_abundance("Fe"), expected_fe, atol=1e-6)
