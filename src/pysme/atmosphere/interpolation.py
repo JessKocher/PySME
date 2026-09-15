@@ -118,6 +118,44 @@ class RbfGrid:
         diffs = np.abs(sorted_unique_vals[1:] - sorted_unique_vals[:-1])
         return np.min(diffs) if diffs.size > 0 else fallback
 
+    def check_within_bounds(self, teff, logg, monh, interpolation_policy="allow"):
+        """
+        Check a query point against the grid's Teff/logg/[M/H] range.
+        ``RBFInterpolator`` (in local-neighbors mode) extrapolates with no
+        warning for points outside the grid, so this is the only thing that
+        stops that from happening silently.
+
+        Mirrors the naming/semantics of the (currently unmerged)
+        ``interpolation_policy`` feature on ``upstream/codex/interpolation-policy``:
+        ``"allow"`` (default) logs and proceeds (extrapolating); anything else
+        (e.g. ``"error"``) raises.
+
+        Parameters
+        ----------
+        interpolation_policy : {"allow", "error"}, optional
+            What to do about an out-of-range query (default: "allow").
+
+        Raises
+        ------
+        AtmosphereError
+            If the query is out of range and ``interpolation_policy`` isn't "allow".
+        """
+        for name, value, (lo, hi) in [
+            ("Teff", teff, self.teff_bounds),
+            ("log(g)", logg, self.logg_bounds),
+            ("[M/H]", monh, self.met_bounds),
+        ]:
+            if value < lo or value > hi:
+                if interpolation_policy == "allow":
+                    logger.info(
+                        "RBF interpolation: requested %s=%.3f outside grid range [%.3f, %.3f]; extrapolating.",
+                        name, value, lo, hi,
+                    )
+                else:
+                    raise AtmosphereError(
+                        f"RBF interpolation: requested {name}={value} outside grid range [{lo}, {hi}]."
+                    )
+
     def build_interpolator(self):
         """Build the RBFInterpolator over the whole grid, once, for reuse across queries."""
         grid_points = np.vstack((self.teffs, self.loggs, self.mets)).T
@@ -166,6 +204,9 @@ class RbfGrid:
         self.grid_teffs = np.array(grid_teffs)
         self.grid_loggs = np.array(grid_loggs)
         self.grid_mets = np.array(grid_mets)
+        self.teff_bounds = (self.grid_teffs.min(), self.grid_teffs.max())
+        self.logg_bounds = (self.grid_loggs.min(), self.grid_loggs.max())
+        self.met_bounds = (self.grid_mets.min(), self.grid_mets.max())
 
         # Scale s.t. all step sizes match, except for a slight scaling that will prefer teff over met over logg steps when all would otherwise be equidistant
         temp_mets = np.array(sorted(np.unique(grid_mets)))
@@ -288,7 +329,7 @@ class AtmosphereInterpolator:
         self.rbf_grid_key = None
         self.verbose = verbose
 
-    def interp_atmo_grid(self, atmo_grid, teff, logg, monh):
+    def interp_atmo_grid(self, atmo_grid, teff, logg, monh, interpolation_policy="allow"):
         """
         General routine to interpolate in 3D grid of model atmospheres
 
@@ -308,6 +349,12 @@ class AtmosphereInterpolator:
             wether to plot debug information (default: False)
         reload : bool
             wether to reload atmosphere information from disk (default: False)
+        interpolation_policy : {"allow", "error"}, optional
+            Only used by the RBF path (``interp="RBF"``): what to do when the
+            requested Teff/logg/[M/H] falls outside the grid's range.
+            "allow" (default) logs and extrapolates; "error" raises
+            AtmosphereError. Matches the naming/semantics of the
+            (currently unmerged) ``interpolation_policy`` feature.
 
         Returns
         -------
@@ -350,7 +397,7 @@ class AtmosphereInterpolator:
                 self.rbf_grid = RbfGrid(atmo_grid, self.geom)
                 self.rbf_grid_key = rbf_key
             rbf_grid = self.rbf_grid
-            atmo = self.interpolate_RBF(teff, logg, monh, rbf_grid)
+            atmo = self.interpolate_RBF(teff, logg, monh, rbf_grid, interpolation_policy=interpolation_policy)
             if self.geom == "SPH":
                 geom = "SPH"
                 radius = atmo.radius
@@ -398,7 +445,7 @@ class AtmosphereInterpolator:
 
         return atmo
 
-    def interpolate_RBF(self, teff, logg, monh, rbf_grid):
+    def interpolate_RBF(self, teff, logg, monh, rbf_grid, interpolation_policy="allow"):
         """
         Interpolate a model atmosphere at (teff, logg, monh) using radial
         basis function interpolation over ``rbf_grid``, as an alternative to
@@ -415,12 +462,21 @@ class AtmosphereInterpolator:
         rbf_grid : RbfGrid
             Precomputed RBF grid (rescaled coordinates, cached interpolator)
             to interpolate from.
+        interpolation_policy : {"allow", "error"}, optional
+            What to do when (teff, logg, monh) falls outside the grid's
+            range (default: "allow", i.e. log and extrapolate).
 
         Returns
         -------
         atmo : Atmosphere
             interpolated atmosphere data
+
+        Raises
+        ------
+        AtmosphereError
+            If the query is out of range and ``interpolation_policy`` isn't "allow".
         """
+        rbf_grid.check_within_bounds(teff, logg, monh, interpolation_policy)
         target_params = np.array([round(teff * rbf_grid.teff_step_scale,3), round(logg * rbf_grid.logg_step_scale,3), round(monh * rbf_grid.met_step_scale,3)]) #scaled so all three params have same step-size
         atmo = Atmo(interp="rhox") #purely to initliaize the structure
 

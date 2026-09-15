@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """Tests for the RBF-based atmosphere-grid interpolation path (RbfGrid/interpolate_RBF)."""
 import numpy as np
+import pytest
 
 from pysme.abund import Abund, elements_dict
-from pysme.atmosphere.atmosphere import AtmosphereGrid
+from pysme.atmosphere.atmosphere import AtmosphereError, AtmosphereGrid
 from pysme.atmosphere.interpolation import AtmosphereInterpolator
 
 # Approximate solar photospheric abundances (H=12 scale), in the standard
@@ -149,3 +150,24 @@ def test_rbf_abundance_stays_consistent_with_interpolated_metallicity():
     expected_fe = _SOLAR_H12[elements_dict["Fe"]] + atmo.monh
 
     assert np.isclose(atmo.abund.get_pattern_abundance("Fe"), expected_fe, atol=1e-6)
+
+
+def test_rbf_out_of_domain_raises_with_error_policy():
+    teffs, loggs, monhs = [4900.0, 5100.0], [3.8, 4.2], [-0.2, 0.2]
+    grid = _make_synthetic_grid("bounds_grid", teffs, loggs, monhs, temp_value=5000.0)
+    interpolator = AtmosphereInterpolator(interp="RBF")
+
+    with pytest.raises(AtmosphereError):
+        interpolator.interp_atmo_grid(
+            grid, 50000.0, 4.0, 0.0, interpolation_policy="error"
+        )
+
+
+def test_rbf_out_of_domain_extrapolates_with_allow_policy():
+    teffs, loggs, monhs = [4900.0, 5100.0], [3.8, 4.2], [-0.2, 0.2]
+    grid = _make_synthetic_grid("bounds_grid", teffs, loggs, monhs, temp_value=5000.0)
+    interpolator = AtmosphereInterpolator(interp="RBF")
+
+    # Default policy ("allow"): still returns a (extrapolated) result rather than raising.
+    atmo = interpolator.interp_atmo_grid(grid, 50000.0, 4.0, 0.0)
+    assert np.all(np.isfinite(atmo.temp))
