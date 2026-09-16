@@ -152,6 +152,30 @@ def test_rbf_abundance_stays_consistent_with_interpolated_metallicity():
     assert np.isclose(atmo.abund.get_pattern_abundance("Fe"), expected_fe, atol=1e-6)
 
 
+def test_rbf_interpolates_spherical_geometry():
+    # Every other RBF test uses the default geom="PP", so none of them
+    # exercise the SPH-only vtags (height combined with radius, per
+    # initialize_tags/to_interp_space_vector). Use a non-degenerate 2x2x2
+    # grid so this isolates the SPH-specific readout path from the
+    # single-value-axis handling covered separately above.
+    teffs, loggs, monhs = [4500.0, 4700.0], [2.0, 2.4], [-0.5, 0.0]
+    ndep = 4
+    grid = _make_synthetic_grid(
+        "spherical_grid", teffs, loggs, monhs, temp_value=4600.0,
+        ndep=ndep, geom="SPH",
+    )
+    interpolator = AtmosphereInterpolator(interp="RBF", geom="SPH")
+    atmo = interpolator.interp_atmo_grid(grid, 4600.0, 2.2, -0.25)
+
+    assert np.all(np.isfinite(atmo.height))
+    assert len(atmo.height) == ndep
+    assert atmo.radius > 0
+    # The helper uses radius=1e11 for SPH grids (vs. radius=1 for PP) - a
+    # sanity check that the interpolated radius lands in that same regime,
+    # rather than e.g. silently falling back to a PP-shaped result.
+    assert np.isclose(atmo.radius, 1e11, rtol=0.5)
+
+
 def test_rbf_out_of_domain_raises_with_error_policy():
     teffs, loggs, monhs = [4900.0, 5100.0], [3.8, 4.2], [-0.2, 0.2]
     grid = _make_synthetic_grid("bounds_grid", teffs, loggs, monhs, temp_value=5000.0)
