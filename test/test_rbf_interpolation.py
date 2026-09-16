@@ -291,3 +291,63 @@ def test_rbf_interpolation_matches_real_grid(lfs_atmo):
     lo_si, hi_si = sorted((si_lo, si_up))
     si_margin = max(0.1 * (hi_si - lo_si), 0.05)
     assert lo_si - si_margin <= si_between <= hi_si + si_margin
+
+
+@skipif_lfs
+def test_rbf_interpolation_matches_real_grid_pp(lfs_atmo):
+    """
+    Real-grid tie-together test for the plane-parallel (PP) counterpart of
+    test_rbf_interpolation_matches_real_grid. Uses marcs2012p_t1.0.sav
+    (already used by test_atmospheres.py::test_grid_point, so no new
+    download) rather than reusing marcs2014.sav's approach: it has a
+    uniform 56-point depth array with zero padding (confirmed via a
+    full-grid scan), so no truncation helper is needed here, and it still
+    has real Si variation across its 15 metallicities for a meaningful
+    abundance-smoothness check. PP has no height/radius vtag, so those
+    checks from the SPH test don't apply here.
+    """
+    grid = SavFile(
+        lfs_atmo.get("marcs2012p_t1.0.sav"), source="marcs2012p_t1.0.sav", lfs=lfs_atmo
+    )
+    interpolator = AtmosphereInterpolator(interp="RBF", geom="PP", lfs_atmo=lfs_atmo)
+    logg, monh = 4.0, -1.0
+
+    # Exact grid point: RBFInterpolator (smoothing=0) is an exact interpolant
+    # at its own input points, so this should reproduce the stored model
+    # (structure and abundance) almost exactly.
+    teff = 5000.0
+    atmo_interp = interpolator.interp_atmo_grid(grid, teff, logg, monh)
+    atmo_grid = grid.get(teff, logg, monh)
+
+    assert np.allclose(atmo_interp.temp, atmo_grid.temp, rtol=1e-6)
+    assert np.isclose(
+        atmo_interp.abund.get_pattern_abundance("Si"),
+        atmo_grid.abund.get_pattern_abundance("Si"),
+        rtol=1e-6,
+    )
+
+    # Off-grid teff, bracketed by two real grid points at the same logg/monh.
+    # No independent reference exists for an arbitrary off-grid point, so
+    # this stays a plausibility check: finite, still hotter with depth, and
+    # landing close to (not necessarily exactly inside) the bracketing
+    # points' own values.
+    lower = grid.get(4750.0, logg, monh)
+    upper = grid.get(5000.0, logg, monh)
+    atmo_between = interpolator.interp_atmo_grid(grid, 4875.0, logg, monh)
+
+    assert np.all(np.isfinite(atmo_between.temp))
+    assert np.all(np.diff(atmo_between.temp) >= -1e-6 * np.max(atmo_between.temp))
+
+    lo_bound = np.minimum(lower.temp, upper.temp)
+    hi_bound = np.maximum(lower.temp, upper.temp)
+    margin = 0.1 * (hi_bound - lo_bound)
+    assert np.all(atmo_between.temp >= lo_bound - margin)
+    assert np.all(atmo_between.temp <= hi_bound + margin)
+
+    si_between = atmo_between.abund.get_pattern_abundance("Si")
+    si_lo = lower.abund.get_pattern_abundance("Si")
+    si_up = upper.abund.get_pattern_abundance("Si")
+    assert np.isfinite(si_between)
+    lo_si, hi_si = sorted((si_lo, si_up))
+    si_margin = max(0.1 * (hi_si - lo_si), 0.05)
+    assert lo_si - si_margin <= si_between <= hi_si + si_margin
