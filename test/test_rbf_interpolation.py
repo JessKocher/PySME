@@ -6,6 +6,9 @@ import pytest
 from pysme.abund import Abund, elements_dict
 from pysme.atmosphere.atmosphere import AtmosphereError, AtmosphereGrid
 from pysme.atmosphere.interpolation import AtmosphereInterpolator
+from pysme.atmosphere.savfile import SavFile
+
+from .test_largefilestorage import lfs_atmo, skipif_lfs
 
 # Approximate solar photospheric abundances (H=12 scale), in the standard
 # element order (H, He, Li, Be, B, C, N, O, ...). Illustrative values in the
@@ -195,3 +198,96 @@ def test_rbf_out_of_domain_extrapolates_with_allow_policy():
     # Default policy ("allow"): still returns a (extrapolated) result rather than raising.
     atmo = interpolator.interp_atmo_grid(grid, 50000.0, 4.0, 0.0)
     assert np.all(np.isfinite(atmo.temp))
+
+
+def _real_depth_count(atmo):
+    """
+    marcs2014.sav pads every atmosphere's per-depth arrays to a fixed max
+    length (72) with trailing zeros/NaNs beyond that atmosphere's real depth
+    count (56, for every point checked so far). RbfGrid.initialize_depth
+    already strips this globally (from the first grid atmosphere) before
+    fitting; grid-fetched comparison values need the same stripping applied
+    per-atmosphere before comparing against RBF's (already-truncated) output.
+    """
+    tau = np.asarray(atmo.tau)
+    if np.isnan(tau[-1]):
+        return int(np.sum(~np.isnan(tau)))
+    if tau[-1] == 0:
+        return int(np.sum(tau > 0.0))
+    return len(tau)
+
+
+@skipif_lfs
+def test_rbf_interpolation_matches_real_grid(lfs_atmo):
+    """
+    Tie-together sanity check against a real MARCS grid (marcs2014.sav),
+    covering both the atmosphere-structure interpolation and the abundance
+    interpolation together. Chosen over the smaller, mono-metallic
+    marcs2012s_t1.0.sav for this test because it's already used elsewhere in
+    this project (no extra download) and lets abundance-interpolation
+    smoothness be checked at the same time.
+
+    Note: the *absolute* abundance values from this grid are known to be
+    wrong (a separate, pre-existing Abund/Atmosphere double-counting bug,
+    unrelated to RBF/PR #22 - see the write-up sent to the maintainer). This
+    test only checks that RBF reproduces the (still-realized) pattern
+    exactly at a grid point and interpolates it smoothly off-grid, not that
+    the values are physically correct.
+    """
+    grid = SavFile(lfs_atmo.get("marcs2014.sav"), source="marcs2014.sav", lfs=lfs_atmo)
+    interpolator = AtmosphereInterpolator(interp="RBF", geom="SPH", lfs_atmo=lfs_atmo)
+    logg, monh = 2.5, -1.0
+
+    # Exact grid point: RBFInterpolator (smoothing=0) is an exact interpolant
+    # at its own input points (the query is its own nearest neighbor), so
+    # this should reproduce the stored model almost exactly - the real-data
+    # analog of test_atmospheres.py::test_grid_point, without that test's
+    # depth-index shift (RBF doesn't clip a top point the way the TAU/
+    # pairwise path does).
+    teff = 5000.0
+    atmo_interp = interpolator.interp_atmo_grid(grid, teff, logg, monh)
+    atmo_grid = grid.get(teff, logg, monh)
+    n = _real_depth_count(atmo_grid)
+
+    assert np.allclose(atmo_interp.temp, np.asarray(atmo_grid.temp)[:n], rtol=1e-6)
+    assert np.allclose(
+        atmo_interp.height, np.asarray(atmo_grid.height)[:n], rtol=1e-6, atol=1e-3
+    )
+    assert np.isclose(atmo_interp.radius, atmo_grid.radius, rtol=1e-6)
+    assert np.isclose(
+        atmo_interp.abund.get_pattern_abundance("Si"),
+        atmo_grid.abund.get_pattern_abundance("Si"),
+        rtol=1e-6,
+    )
+
+    # Off-grid teff, bracketed by two real grid points at the same logg/monh.
+    # No independent reference exists for an arbitrary off-grid point, so
+    # this stays a plausibility check for both the structure and the
+    # abundance: finite, still hotter with depth, and landing close to (not
+    # necessarily exactly inside) the bracketing points' own values.
+    lower = grid.get(4750.0, logg, monh)
+    upper = grid.get(5000.0, logg, monh)
+    atmo_between = interpolator.interp_atmo_grid(grid, 4875.0, logg, monh)
+
+    n_lo, n_up = _real_depth_count(lower), _real_depth_count(upper)
+    assert n_lo == n_up == len(atmo_between.temp)
+    lo_temp = np.asarray(lower.temp)[:n_lo]
+    up_temp = np.asarray(upper.temp)[:n_up]
+
+    assert np.all(np.isfinite(atmo_between.temp))
+    assert np.all(np.isfinite(atmo_between.height))
+    assert np.all(np.diff(atmo_between.temp) >= -1e-6 * np.max(atmo_between.temp))
+
+    lo_bound = np.minimum(lo_temp, up_temp)
+    hi_bound = np.maximum(lo_temp, up_temp)
+    margin = 0.1 * (hi_bound - lo_bound)
+    assert np.all(atmo_between.temp >= lo_bound - margin)
+    assert np.all(atmo_between.temp <= hi_bound + margin)
+
+    si_between = atmo_between.abund.get_pattern_abundance("Si")
+    si_lo = lower.abund.get_pattern_abundance("Si")
+    si_up = upper.abund.get_pattern_abundance("Si")
+    assert np.isfinite(si_between)
+    lo_si, hi_si = sorted((si_lo, si_up))
+    si_margin = max(0.1 * (hi_si - lo_si), 0.05)
+    assert lo_si - si_margin <= si_between <= hi_si + si_margin
