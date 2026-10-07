@@ -16,6 +16,25 @@ sme = synthesize_spectrum(sme)
 
 This option supports plane-parallel and spherical atmospheres.
 
+## How to enable dynamical mu-spacing (experimental)
+
+By default, PySME uses the `mu` values you set on `sme.mu` (or the class
+default) exactly as given. To instead have PySME recompute `mu` from the
+atmosphere's depth grid every time the atmosphere is (re)computed, enable
+the opt-in switch before synthesis:
+
+```py
+from pysme.synthesize import synthesize_spectrum
+
+sme.mu_dynamic = True
+sme.mu_num = [10, 10]  # optional: [n_non_grazing, n_grazing] ray counts, default [10, 10]
+sme = synthesize_spectrum(sme)
+```
+
+This option requires a spherical (SPH) atmosphere; it raises an error at
+synthesis time for plane-parallel (PP) models. `mu_num` is ignored (and
+never validated) whenever `mu_dynamic` is `False`.
+
 ## How to get the atmosphere grid
 
 ```py
