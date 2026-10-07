@@ -2236,12 +2236,12 @@ class Synthesizer:
         bottom_of_atmosphere_fraction = bottom_of_atmosphere_cm/top_of_atmosphere_cm
         edgecase_mu = np.sqrt(1-(bottom_of_atmosphere_fraction-0.01)**2) #round down by 1 percent so this one is in core
 
-        non_grazing_mus = ( 1 - (1 - edgecase_mu**2) * (2 * np.arange(non_grazing_number) + 1) / (2 * non_grazing_number) ) ** 0.5 #OBS TODO plot to check this, it's from Claude
+        non_grazing_mus = ( 1 - (1 - edgecase_mu**2) * (2 * np.arange(non_grazing_number) + 1) / (2 * non_grazing_number) ) ** 0.5
 
         ### For grazing rays, check nr of depthpoints and distribute our rays among them ##
         nr_of_depthpoints = sme._atmo.ndep
-        depth_indices = np.linspace(2, nr_of_depthpoints - 1, grazing_number).astype(int)
-        heights_for_these_rays = np.array(sme._atmo.height)[depth_indices] + sme._atmo.radius
+        depth_indices = np.linspace(2, nr_of_depthpoints - 2, grazing_number).astype(int)
+        heights_for_these_rays = (np.array(sme._atmo.height)[depth_indices] + np.array(sme._atmo.height)[depth_indices+1]) / 2  + sme._atmo.radius
         mus_for_these_rays = np.sqrt(1-(heights_for_these_rays/top_of_atmosphere_cm)**2)
 
         mulist = sorted(np.concatenate((non_grazing_mus, mus_for_these_rays)), reverse=True)
