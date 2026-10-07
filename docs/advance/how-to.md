@@ -16,7 +16,7 @@ sme = synthesize_spectrum(sme)
 
 This option supports plane-parallel and spherical atmospheres.
 
-## How to enable dynamical mu-spacing (experimental)
+## How to enable dynamical mu-spacing
 
 By default, PySME uses the `mu` values you set on `sme.mu` (or the class
 default) exactly as given. To instead have PySME recompute `mu` from the
