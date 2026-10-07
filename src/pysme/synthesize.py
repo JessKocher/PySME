@@ -318,13 +318,13 @@ def _same_path(a, b):
 def _resolve_mu_num(mu_num):
     """Validate mu_num and return (non_grazing_number, grazing_number)."""
     try:
-        arr = np.asarray(mu_num, dtype=int).reshape(2)
+        arr = np.asarray(mu_num, dtype=float).reshape(2)
     except (TypeError, ValueError):
         raise ValueError(
             f"sme.mu_num must be two positive integers when mu_dynamic=True, "
             f"got {mu_num!r}."
         )
-    if np.any(arr <= 0):
+    if np.any(arr <= 0) or np.any(arr != np.floor(arr)):
         raise ValueError(
             f"sme.mu_num must be two positive integers when mu_dynamic=True, "
             f"got {mu_num!r}."
