@@ -2216,6 +2216,39 @@ class Synthesizer:
         return result
 
     def dynamically_update_mu(self, sme):
+        """Recompute sme.mu from the atmosphere's depth grid for spherical geometry
+
+        Builds a new set of limb angles (mu = cos(theta)) in two groups:
+
+        - Non-grazing rays: rays whose line of sight passes through the bottom
+          of the atmosphere (the stellar "core"), spaced by equal projected
+          area (sqrt-of-area weighting) between disk center (mu=1) and the
+          edge of the core.
+        - Grazing rays: rays that never reach the bottom of the atmosphere and
+          instead turn around (are tangent) somewhere inside it. One grazing
+          ray is placed per selected depth point, with its mu chosen so the
+          ray's tangent point falls reliably between that depth point and the
+          next deeper one.
+
+        The number of rays in each group is controlled by sme.mu_num
+        (see _resolve_mu_num). This mutates sme.mu in place; it does not
+        return a value.
+
+        Parameters
+        ----------
+        sme : SME_Struct
+            The SME structure to update. Must have an atmosphere that has
+            already been resolved to spherical (SPH) geometry, with height
+            and radius set.
+
+        Raises
+        ------
+        AtmosphereError
+            If the atmosphere is not spherical, or is missing height/radius.
+        ValueError
+            If sme.mu_num does not resolve to two positive integers
+            (see _resolve_mu_num).
+        """
         if sme._atmo.geom != "SPH":
             raise AtmosphereError(
                 "sme.mu_dynamic=True requires spherical (SPH) atmosphere "
@@ -2240,13 +2273,16 @@ class Synthesizer:
 
         ### For grazing rays, check nr of depthpoints and distribute our rays among them ##
         nr_of_depthpoints = sme._atmo.ndep
+        # Skip the outermost 1-2 depth points as grazing-ray tangent points: they're
+        # cool enough to contribute little flux, and this range is validated by testing.
+        # Upper bound is ndep-2 (not ndep-1) because depth_indices+1 below must stay in bounds.
         depth_indices = np.linspace(2, nr_of_depthpoints - 2, grazing_number).astype(int)
-        heights_for_these_rays = (np.array(sme._atmo.height)[depth_indices] + np.array(sme._atmo.height)[depth_indices+1]) / 2  + sme._atmo.radius
-        mus_for_these_rays = np.sqrt(1-(heights_for_these_rays/top_of_atmosphere_cm)**2)
+        grazing_heights = (np.array(sme._atmo.height)[depth_indices] + np.array(sme._atmo.height)[depth_indices+1]) / 2  + sme._atmo.radius
+        grazing_mus = np.sqrt(1-(grazing_heights/top_of_atmosphere_cm)**2)
 
-        mulist = sorted(np.concatenate((non_grazing_mus, mus_for_these_rays)), reverse=True)
+        mulist = sorted(np.concatenate((non_grazing_mus, grazing_mus)), reverse=True)
         sme.mu = mulist
-        print(f"Updated mu list to {sme.mu}")
+        logger.debug("Updated mu list to %s", sme.mu)
 
 
     # @profile
