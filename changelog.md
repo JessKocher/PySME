@@ -1,10 +1,100 @@
 # Changelog
 
-## 2026-09-09
+## Unreleased
 
-- Added `sme.h_stark_convolution = "convolution"` for Br10 and higher.
-  The default remains `"legacy"`.
-  See the [SMElib v6.13.18 documentation](https://github.com/SpectroscopyMadeEasy/SMElib/blob/v6.13.18/docs/brackett_stark_convolution.md).
+### Fixed
+
+- Add physical H/He acceptance tests using small real MARCS 2012/2014 grid
+  samples, plus mandatory full-grid checks after CI prefetch on Linux/macOS.
+  Cover direct extraction, interpolation and SME-file persistence.
+- Distinguish legacy atmosphere-grid abundances (linear H and He) from
+  modern SME abundances (linear H, logarithmic He), including previously
+  converted NumPy caches. Preserve the format when extracting grid models.
+- Preserve internal abundance values when copying, saving and reloading
+  objects with a non-default display/input format; correct Kurucz output
+  normalization for metals.
+- Keep the atmosphere-file cache keyed by filename and report the grid's
+  stored depth count correctly.
+- Preserve logarithmic He in MARCS `.krz` input; accept signed/decimal header
+  values and scientific-notation ATLAS abundances. Reconstruct ATLAS atomic
+  density after subtracting electron pressure, using the effective metallicity
+  and atomic mass unit. This remains an atomic-gas approximation.
+
+Already incorrectly decoded atmosphere files are not repaired automatically;
+reload them from their source grids. The separate MARCS text-reader H/He
+metallicity correction is deferred. The pinned SMElib dependency is unchanged.
+
+## v1.2.0 - 2026-09-24
+
+### Performance
+
+- Reworked adaptive synthesis with edge-aware continuum-opacity caching and
+  generation-batched, interval-indexed transfer for plane-parallel and
+  spherical atmospheres. Complete synthesis was approximately 19--40x faster
+  in the canonical 10 A validation matrix; gains vary with line density and
+  wavelength coverage.
+- Made ALMAX-based line selection the default and reused its immediately
+  prepared line-opacity state for the following transfer when safe.
+- Reused the resident line list and atmosphere/model during abundance-only
+  `solve(...)` iterations while still recomputing abundance-dependent EOS,
+  opacity, ALMAX state, and transfer.
+- Reduced large-line-list memory through float line-state cache storage with
+  double-precision arithmetic and incremental parsing of counted long-format
+  VALD `extract stellar` files.
+
+### Correctness
+
+- Removed historical order-dependent second weak-line pruning from the
+  optimized path and kept precomputed selected-line masks and physical ranges
+  immutable during transfer.
+- Corrected fixed-grid physical line ranges, irregular-grid flux integration,
+  spherical grazing-ray evaluation order, and contribution-function disk
+  integration.
+- Invalidated ALMAX metadata on effective abundance changes and recalculated it
+  only after the new abundances and ionization state reached SMElib.
+- Replaced the historical fixed 400,000-point adaptive-transfer ceiling with
+  dynamic capacity sizing for unusually wide, line-rich segments.
+
+### Compatibility
+
+- `sme.transfer_grid_method = "legacy"` retains sequential adaptive transfer
+  for compatibility/reference calculations, and
+  `sme.line_select_method = "internal"` retains established internal selection.
+  User-supplied fixed transfer grids retain the sorted indexed path.
+- `sme.continuum_grid = "exact"` retains exact continuum evaluation.
+- CDR and optional binned-ALMAX selection now share SMElib's cumulative-bin
+  selector, while Python dynamic line-list filtering remains available.
+- Clarified that `accrt` is a local line-opacity/support threshold and `accwi`
+  is a local adaptive-grid refinement criterion; neither is a global bound on
+  final synthesized-spectrum error.
+
+## v1.1.0 - 2026-09-15
+
+### Added
+
+- Added an opt-in continuum-scattering source for plane-parallel and spherical atmospheres; the Planck source remains the default.
+- Added the Amarsi & Grevesse (2026) solar abundance pattern as `amarsi2026`.
+- Added `sme.nlte.strict` for runs that must stop instead of falling back to LTE when requested NLTE data cannot be applied.
+- Added checksum and size validation for downloaded atmosphere and NLTE data.
+
+### Changed
+
+- Interpolate spherical-atmosphere height and radius as a combined logarithmic quantity.
+- Build the 3D NLTE hydrogen interpolation grid only when it is first used.
+- Pin the bundled SMElib source to v6.13.19.
+
+### Fixed
+
+- Accept VALD-compatible headers that omit the comma after `Vmicro`.
+- Fall back to serial CDR line selection when the runtime cannot create worker processes, unless strict line-selection policy is requested.
+- Apply progress-bar settings at call time and use the correct Boolean test for disabling progress bars.
+- Avoid NumPy shape-assignment warnings in continuum and radial-velocity fitting.
+- Close persistence files after failed reads and use a plain Plotly figure outside notebooks.
+
+## v1.0.3 - 2026-09-09
+
+- Added `sme.h_stark_convolution = "convolution"` for Br10 and higher; the default remains `"legacy"`.
+- See the [SMElib v6.13.18 documentation](https://github.com/SpectroscopyMadeEasy/SMElib/blob/v6.13.18/docs/brackett_stark_convolution.md).
 
 ## 2026-06-26
 
