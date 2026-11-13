@@ -27,6 +27,12 @@
   level, once per cell. Grid models with non-positive values are reported and
   left out, and grids with several models at one (Teff, log g, [M/H]) point
   are rejected.
+- Added opt-in dynamical mu-spacing for spherical atmospheres
+  (`sme.mu_dynamic`, `sme.mu_num`), recomputing grazing-ray limb angles from
+  the atmosphere's own depth grid at each synthesis call instead of a fixed
+  external mu grid. This removes `logg`-dependent $\chi^2$ discontinuities
+  seen with a static mu grid, most noticeably along the red giant branch
+  where atmospheric extent varies strongly with surface gravity.
 
 ### Fixed
 
