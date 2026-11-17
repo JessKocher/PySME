@@ -25,7 +25,7 @@ The atmopshere object has the following fields:
 |`source`|Filename of the atmosphere grid|see [lfs](lfs.md)|
 |`depth`|The depth scale to use for calculations.|`RHOX` or `TAU`|
 |`interp`|The depth scale to use for interpolation.|`RHOX` or `TAU`|
-|`geom`|The geometry of the atmosphere.|Plane Parallel `'PP'` or Spherical `'SPH'`|
+|`geom`|The geometry of the atmosphere.|Plane Parallel `'PP'`, Spherical `'SPH'`, or automatic `None` / `''`|
 |`method`|The method to use for interpolation|`'grid'` for a model grid or `'embedded'` if only a single atmosphere is given|
 |`rhox`|Mass column at each tabulated depth in the atmosphere|[$\mathrm{g~cm^{-2}}$]|
 |`tau`|Continuum optical depth at each tabulated depth in the atmosphere||
@@ -39,6 +39,98 @@ The atmopshere object has the following fields:
 |`lonh`|Ratio of mixing length to pressure scale height (`/H) used to generate the atmosphere.||
 |`wlstd`|Wavelength for continuum optical depth scale.|Å, Default value: 5000Å|
 |`opflag`|Flags that indicate whether to enable various opacity packages during the radiative transfer calculation||
+
+## Automatic transfer geometry
+
+Set `sme.atmo.geom = None` (or `''`) to allow a grid synthesis or fit to
+cross between spherical and plane-parallel radiative transfer:
+
+```python
+sme.atmo.source = "marcs2014.sav"
+sme.atmo.geom = None
+sme.atmo.depth = "RHOX"
+```
+
+Automatic mode uses only the selected `source`, inspecting its per-model
+radius flags rather than assuming geometry from its filename or grid header:
+
+| Available geometry in the source | Geometry used for synthesis |
+| --- | --- |
+| PP only | PP at every requested gravity |
+| SPH only | SPH at every requested gravity |
+| Both PP and SPH | PP at `logg >= 3.5`; below 3.5, SPH when all interpolation corners supply spherical geometry, otherwise PP |
+
+Atmospheric structure is interpolated using the complete selected grid,
+including mixed PP/SPH corners. Keeping a single source's geometry does not
+extend that grid's parameter coverage or remove extrapolation warnings.
+
+After synthesis or fitting, `sme.atmo.geom` reports the actual transfer
+geometry (`'PP'` or `'SPH'`); `sme.atmo.source` retains the selected source.
+The read-only `sme.atmo.geom_request` retains the request (`None`, `'PP'`, or
+`'SPH'`), so repeated synthesis, copying, and saving/loading a new `.sme` file
+preserve automatic mode. Assign `sme.atmo.geom` again to change the request.
+Old saved files without request metadata retain their stored geometry as an
+explicit request.
+
+Explicit `'PP'` and `'SPH'` requests continue to select only matching grid
+models and do not use the automatic gravity threshold. Embedded atmospheres
+retain their supplied geometry and are not switched automatically.
+
+The automatic threshold is a hard change in the radiative-transfer geometry,
+so spectra and fit objectives need not be continuous across `logg = 3.5`,
+even if the interpolated atmospheric structure is continuous.
+
+For a mixed PP/SPH source, when `logg` is a free fit parameter and its bounds extend below and above 3.5,
+`solve` fits the two gravity regions separately, keeping structure
+interpolation in automatic mode. It returns only the successful candidate
+with the smallest final optimization objective (chi-square for the default
+linear loss). Exact ties select the low-gravity candidate, evaluated first.
+The returned result does not establish that the data uniquely determine the
+geometry, and it is not a guarantee of the global optimum. Geometry ambiguity
+and model comparison are left to the caller. Explicit geometry requests,
+single-geometry sources, single-region bounds, and fits without free `logg`
+retain a single fit. Thus synthesis selects geometry at the supplied point;
+fitting can compare optimized candidates from both gravity regions of a
+mixed source and return the smaller objective.
+
+See the [boundary testing guide](../dev/auto_geometry_testing.md) for a
+reproducible synthesis and fitting diagnostic and its current limitations.
+
+## Spherical transfer on optical depth
+
+With an SMElib build providing `InputModelEx` and the `SPH:TAU` capability,
+both spherical and plane-parallel transfer can use a reference optical-depth
+coordinate. For example:
+
+```python
+sme.atmo.source = "marcs2014.sav"
+sme.atmo.geom = "SPH"  # or None for automatic geometry
+sme.atmo.interp = "TAU"
+sme.atmo.depth = "TAU"
+```
+
+`interp` selects the coordinate for interpolating atmospheric structures;
+`depth` selects the coordinate for radiative transfer. They remain independent.
+The source must supply `tau` at `wlstd` (5000 Å by default), rather than
+Rosseland optical depth or logarithmic optical depth. For a MARCS table with
+`lgTau5`, use `tau = 10**lgTau5`. Spherical models also require `radius` and
+`height` in cm, with `radius + height > 0` and heights decreasing inward.
+The input depth coordinate must increase inward.
+
+Spherical rays retain their geometric path lengths. Transfer integrates
+`d(tau)` with wavelength opacity divided by the continuum extinction at
+`wlstd`. The reference includes absorption and scattering. Continuum-scattering
+source calculations use the same coordinate transformation. The existing
+scattering-source option and its defaults are unchanged.
+
+PySME sends SPH+TAU through the new explicit native interface. A library
+lacking this capability raises an error; it cannot silently interpret TAU
+as RHOX. The three historical geometry/depth combinations retain their old
+input interface. Default geometry and file-loader depth choices are unchanged.
+See the [SPH+TAU testing guide](../dev/sph_tau_testing.md) for build and
+coordinate-consistency checks. Independently tabulated MARCS TAU and RHOX
+need not produce identical spectra, because their opacities and radial
+column definitions can differ from the controlled transformation used there.
 
 ## Atmosphere grids:
 

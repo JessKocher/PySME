@@ -494,6 +494,19 @@ class AtmosphereInterpolator:
         self.rbf_grid_key = None
         self.verbose = verbose
 
+    def load_grid(self, source):
+        """Load/cache a source without selecting geometry or interpolating."""
+        if isinstance(source, AtmosphereGrid):
+            self.atmo_grid = source
+            self.source = source.source
+        elif self.atmo_grid is None or self.source != source:
+            atmo_file = self.lfs_atmo.get(source)
+            self.source = source
+            self.atmo_grid = SavFile(
+                atmo_file, source=source, lfs=self.lfs_atmo
+            )
+        return self.atmo_grid
+
     def interp_atmo_grid(
         self, atmo_grid, teff, logg, monh, interpolation_policy="allow"
     ):
@@ -527,17 +540,7 @@ class AtmosphereInterpolator:
             interpolated atmosphere data
         """
 
-        # Internal parameters.
-        if not isinstance(atmo_grid, AtmosphereGrid):
-            if self.atmo_grid is None or self.source != atmo_grid:
-                atmo_file = self.lfs_atmo.get(atmo_grid)
-                self.source = atmo_grid
-                self.atmo_grid = SavFile(
-                    atmo_file, source=self.source, lfs=self.lfs_atmo
-                )
-        else:
-            self.atmo_grid = atmo_grid
-            self.source = atmo_grid.source
+        self.load_grid(atmo_grid)
 
         if self.geom is not None:
             if self.geom == "PP":
@@ -577,8 +580,16 @@ class AtmosphereInterpolator:
                 teff, logg, monh, icor, atmo_grid, interp=interp
             )
 
-            # TODO: Or should we only consider spherical models for interpolation of spherical modesl are requested?
             geom, radius = self.spherical_model_correction(atmo_grid, icor, logg)
+            # Only mixed sources use the transfer threshold. A single-geometry
+            # source retains its own geometry even outside the usual gravity range.
+            if (
+                self.geom is None
+                and len(self.atmo_grid.geometry_types) > 1
+                and logg >= 3.5
+            ):
+                geom = "PP"
+                radius = None
 
         # Create ATMO.GEOM, if necessary, and set value.
         if self.geom is not None and self.geom != geom:
@@ -597,7 +608,7 @@ class AtmosphereInterpolator:
         # Add standard ATMO input fields, if they are missing from ATMO_IN.
         atmo.depth = depth
         atmo.interp = interp
-        atmo.geom = geom
+        atmo._set_resolved_geometry(geom, self.geom)
         if radius is not None:
             atmo.radius = radius
         atmo.source = self.source
