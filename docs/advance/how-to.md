@@ -4,17 +4,20 @@ This page describes some new (and in testing) function of PySME.
 
 ## How to include coherent continuum scattering in the continuum source
 
-By default, PySME keeps the historical continuum-source treatment.
-To include coherent continuum scattering in the continuum source function, enable the opt-in switch before synthesis:
+By default, PySME keeps the historical Planck continuum-source treatment (mode `0`).
+To include coherent continuum scattering, select the line-inclusive mode `2` before synthesis:
 
 ```py
 from pysme.synthesize import synthesize_spectrum
 
-sme.continuum_scattering_source = True
+sme.continuum_scattering_mode = 2
 sme = synthesize_spectrum(sme)
 ```
 
-This option supports plane-parallel and spherical atmospheres.
+This option supports plane-parallel and spherical atmospheres. Mode `1`, the
+older continuum-only scattering approximation, is deprecated. The Boolean
+`continuum_scattering_source` name is retained only as an alias: `False`
+selects mode `0`, while `True` selects deprecated mode `1` and warns.
 
 ## How to enable dynamical mu-spacing
 
@@ -27,17 +30,29 @@ the opt-in switch before synthesis:
 from pysme.synthesize import synthesize_spectrum
 
 sme.mu_dynamic = True
-sme.mu_num = [10, 10]  # optional: [n_non_grazing, n_grazing] ray counts, default [10, 10]
+sme.nmu_dyn = [15, 15]  # optional: [n_non_grazing, n_grazing], default [15, 15]
 sme = synthesize_spectrum(sme)
 ```
 
 This option requires a spherical (SPH) atmosphere; it raises an error at
-synthesis time for plane-parallel (PP) models. `mu_num` is ignored (and
-never validated) whenever `mu_dynamic` is `False`.
+synthesis time for plane-parallel (PP) models. `nmu_dyn` is ignored (and
+never validated) whenever `mu_dynamic` is `False`. When it is used, the
+total number of rays, `n_non_grazing + n_grazing`, may not exceed 77, the
+maximum SMElib's radiative transfer accepts (`MUSIZE`), and `n_grazing`
+may not exceed `ndep - 2` for an atmosphere with `ndep` depth points;
+larger requests raise a `ValueError` before synthesis starts.
+
+The default `[15, 15]` keeps the continuum-normalized spectrum within about
+0.1% of a fully converged calculation across the red giant branch (MARCS
+models from logg 3 down to -0.5), at roughly 10% more runtime than
+`[10, 10]`. The non-grazing rays mostly set the absolute flux level, which
+continuum normalization absorbs; the grazing rays shape the lines and
+matter more the more extended the atmosphere is. Increase either count if
+you need higher accuracy.
 
 Setting `sme.nmu` afterwards silently regenerates `sme.mu` via the old
 static formula, since `nmu` is unaware of `mu_dynamic` -- set `mu_dynamic`
-and `mu_num` last, or avoid setting `nmu` at all once `mu_dynamic` is in use.
+and `nmu_dyn` last, or avoid setting `nmu` at all once `mu_dynamic` is in use.
 
 ### Worked example
 
@@ -65,18 +80,23 @@ sme.mu_dynamic = True
 Synthesizer().dynamically_update_mu(sme)
 ```
 
-`sme.mu` (20 values, since `mu_num` defaults to `[10, 10]`) now reads:
+`sme.mu` (30 values, since `nmu_dyn` defaults to `[15, 15]`) now reads:
 
 ```py
-array([0.9835, 0.9496, 0.9144, 0.8778, 0.8396, 0.7996, 0.7575, 0.713 ,
-       0.6654, 0.6142, 0.5701, 0.5414, 0.5104, 0.4766, 0.4393, 0.3977,
-       0.3502, 0.2938, 0.2219, 0.1382])
+array([0.9887, 0.9658, 0.9423, 0.9183, 0.8936, 0.8681, 0.8419, 0.8149,
+       0.7869, 0.7579, 0.7278, 0.6964, 0.6634, 0.6287, 0.5921, 0.5701,
+       0.5473, 0.5293, 0.5104, 0.4905, 0.4621, 0.4393, 0.415 , 0.3887,
+       0.3602, 0.3177, 0.281 , 0.2382, 0.185 , 0.1071])
 ```
 
-The first 10 values (non-grazing rays) are spaced by equal projected area
-down to the edge of the stellar core; the last 10 (grazing rays) are each
-anchored to a depth point in `atmo`, so their exact values depend on this
-atmosphere's own height grid rather than a fixed external formula.
+The first 15 values (non-grazing rays) are spaced by equal projected area
+down to the edge of the stellar core; the last 15 (grazing rays) each turn
+around midway between two depth points in `atmo`, so their exact values
+depend on this atmosphere's own height grid rather than a fixed external
+formula. The outermost depth interval is never used as a tangent point,
+since SMElib returns zero intensity for a ray that crosses only the top
+layer. An atmosphere with `ndep` depth points therefore allows at most
+`ndep - 2` grazing rays.
 
 ### Why this matters
 
@@ -87,7 +107,7 @@ the stellar radius at the tip. This has two consequences for a *static* set
 of mu angles:
 
 1. The number of rays that fall into the "grazing" regime (rays whose line
-   of sight never reaches the bottom of the atmosphere; see `mu_num`)
+   of sight never reaches the bottom of the atmosphere; see `nmu_dyn`)
    changes with surface gravity, so spectra computed at nearby `logg` values
    can end up sampled by a different mix of grazing and non-grazing rays.
 2. Where only a few rays are grazing, each grazing ray's

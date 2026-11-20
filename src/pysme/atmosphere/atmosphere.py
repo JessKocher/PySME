@@ -56,6 +56,8 @@ class Atmosphere(Collection):
         ("source", "marcs2012.sav", this, this, "str: datafile name of this data, or atmosphere grid/file"),
         ("method", "grid", lowercase(oneof("grid", "routine", "embedded")), this,
             "str: whether the data source is a grid or a fixed atmosphere"),
+        ("interpolation_monh", None, this, this,
+            "float or None: [M/H] used for the most recent grid interpolation"),
         ("geom", "PP", _set_geometry_request, this,
             "str: PP, SPH, or None for automatic geometry; resolved after interpolation"),
         ("radius", 0, asfloat, this, "float: radius of the spherical model"),

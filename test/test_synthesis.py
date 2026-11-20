@@ -9,9 +9,11 @@ import pytest
 from pysme import util
 from pysme.abund import Abund
 from pysme.atmosphere.atmosphere import Atmosphere, AtmosphereError
+from pysme.atmosphere.interpolation import AtmosphereInterpolator
 from pysme.atmosphere.krzfile import KrzFile
 from pysme.iliffe_vector import Iliffe_vector
 from pysme.linelist.linelist import LineList
+from pysme.linelist.vald import ValdFile
 from pysme.sme import SME_Structure as SME_Struct
 from pysme.synthesize import (
     Synthesizer,
@@ -19,11 +21,12 @@ from pysme.synthesize import (
     _compute_linelist_hash,
     _compute_almax_lineinfo_for_sme,
     _load_lineinfo_cache_file,
-    _resolve_mu_num,
+    _resolve_nmu_dyn,
     _temporary_brackett_convolution_env,
     synthesize_spectrum,
 )
 from .conftest import skipif_smelib
+from .test_largefilestorage import lfs_atmo, skipif_lfs  # noqa: F401
 
 
 @skipif_smelib
@@ -862,7 +865,7 @@ def test_high_level_continuum_scattering_source_spherical_on():
 def test_mu_dynamic_updates_mu_during_real_synthesis():
     sme = _continuum_scattering_sme(os.path.dirname(__file__), spherical=True)
     sme.mu_dynamic = True
-    sme.mu_num = [4, 3]
+    sme.nmu_dyn = [4, 3]
     synth = Synthesizer()
 
     result = synth.synthesize_spectrum(sme, passNLTE=False)
@@ -899,7 +902,7 @@ def _make_dynamic_mu_atmo(ndep=11, radius=10.0):
 
 
 @pytest.mark.parametrize(
-    "mu_num,expected",
+    "nmu_dyn,expected",
     [
         ((10, 10), (10, 10)),
         ([10, 10], (10, 10)),
@@ -907,12 +910,12 @@ def _make_dynamic_mu_atmo(ndep=11, radius=10.0):
         (["10", "10"], (10, 10)),
     ],
 )
-def test_resolve_mu_num_accepts_valid_input(mu_num, expected):
-    assert _resolve_mu_num(mu_num) == expected
+def test_resolve_nmu_dyn_accepts_valid_input(nmu_dyn, expected):
+    assert _resolve_nmu_dyn(nmu_dyn) == expected
 
 
 @pytest.mark.parametrize(
-    "mu_num",
+    "nmu_dyn",
     [
         [0, 10],
         [-1, 10],
@@ -924,9 +927,137 @@ def test_resolve_mu_num_accepts_valid_input(mu_num, expected):
         ["10.5", "10"],
     ],
 )
-def test_resolve_mu_num_rejects_invalid_input(mu_num):
+def test_resolve_nmu_dyn_rejects_invalid_input(nmu_dyn):
     with pytest.raises(ValueError):
-        _resolve_mu_num(mu_num)
+        _resolve_nmu_dyn(nmu_dyn)
+
+
+def test_resolve_nmu_dyn_accepts_exactly_musize_rays():
+    assert _resolve_nmu_dyn([38, 39]) == (38, 39)
+
+
+@pytest.mark.parametrize("nmu_dyn", [[40, 40], [77, 1], [1, 77]])
+def test_resolve_nmu_dyn_rejects_more_than_musize_rays(nmu_dyn):
+    with pytest.raises(ValueError, match="at most 77"):
+        _resolve_nmu_dyn(nmu_dyn)
+
+
+def test_dynamically_update_mu_rejects_more_than_musize_rays():
+    sme = _minimal_sme()
+    sme.atmo = _make_dynamic_mu_atmo()
+    sme.nmu_dyn = [40, 40]
+    synth = Synthesizer(dll=_DummyDLL())
+
+    with pytest.raises(ValueError, match="at most 77"):
+        synth.dynamically_update_mu(sme)
+
+
+@skipif_smelib
+def test_mu_dynamic_ray_limit_raises_before_transf():
+    # Without the check, [40, 40] reached SMElib's Transf and failed there.
+    sme = _continuum_scattering_sme(os.path.dirname(__file__), spherical=True)
+    sme.mu_dynamic = True
+    sme.nmu_dyn = [40, 40]
+
+    with pytest.raises(ValueError, match="at most 77"):
+        Synthesizer().synthesize_spectrum(sme, passNLTE=False)
+
+
+@pytest.mark.parametrize("nmu_dyn", [[1, 1], [10, 10], [38, 39], [23, 54]])
+def test_dynamically_update_mu_matches_smelib_grazing_classification(nmu_dyn):
+    # SMElib calls a ray grazing when its impact parameter
+    # P = R_top * sqrt(1 - mu^2) is larger than the radius of the deepest layer.
+    sme = _minimal_sme()
+    sme.atmo = _make_dynamic_mu_atmo(ndep=56, radius=1e11)
+    sme.nmu_dyn = nmu_dyn
+    Synthesizer(dll=_DummyDLL()).dynamically_update_mu(sme)
+
+    height = np.asarray(sme.atmo.height)
+    radius = sme.atmo.radius
+    impact = (radius + height[0]) * np.sqrt(1 - np.asarray(sme.mu) ** 2)
+    n_non_grazing, n_grazing = nmu_dyn
+    assert np.count_nonzero(impact < radius + height[-1]) == n_non_grazing
+    assert np.count_nonzero(impact > radius + height[-1]) == n_grazing
+    # No ray turns in the top interval, where SMElib returns zero intensity
+    assert np.all(impact < radius + height[1])
+
+
+def test_dynamically_update_mu_accepts_one_grazing_ray_per_interval():
+    sme = _minimal_sme()
+    sme.atmo = _make_dynamic_mu_atmo(ndep=11)
+    sme.nmu_dyn = [1, 9]
+    Synthesizer(dll=_DummyDLL()).dynamically_update_mu(sme)
+
+    mu = np.asarray(sme.mu)
+    assert mu.shape == (10,)
+    assert np.unique(mu).size == 10
+
+
+def test_dynamically_update_mu_rejects_more_grazing_rays_than_intervals():
+    sme = _minimal_sme()
+    sme.atmo = _make_dynamic_mu_atmo(ndep=11)
+    sme.nmu_dyn = [1, 10]
+    synth = Synthesizer(dll=_DummyDLL())
+
+    with pytest.raises(ValueError, match="at most 9"):
+        synth.dynamically_update_mu(sme)
+
+
+# Convergence of dynamical mu-spacing on spherical MARCS giants. Errors are the
+# largest difference from a 77-ray reference ([40, 37], the most SMElib allows),
+# in the continuum-normalized spectrum (what fits use) and in the absolute
+# continuum. 0.1% in normalized flux is below the noise for S/N up to ~1000.
+# Continuum level offsets come mostly from the non-grazing rays and are absorbed
+# by continuum normalization, so the continuum gets a looser 0.5% limit.
+# Measured for [10, 10], [15, 15], [20, 20], [30, 30] (normalized / continuum):
+#   4800/3.0, core-limited:      3.1e-4 1.4e-4 7.6e-5 2.2e-5 /
+#                                2.6e-3 1.2e-3 6.3e-4 1.8e-4
+#   3600/-0.5, grazing-limited:  1.3e-3 8.6e-4 4.4e-4 8.1e-5 /
+#                                4.0e-4 6.5e-5 6.7e-6 2.6e-5
+# At the tip the continuum error drops below the reference's own accuracy
+# (~4e-5) from 20x20 on, so only the normalized error must keep decreasing.
+CONVERGENCE_NMU_DYN = [[10, 10], [15, 15], [20, 20], [30, 30]]
+
+
+@skipif_smelib
+@skipif_lfs
+@pytest.mark.parametrize("teff,logg", [(4800, 3.0), (3600, -0.5)])
+def test_mu_dynamic_converges_on_rgb_models(lfs_atmo, teff, logg):
+    interpolator = AtmosphereInterpolator(
+        depth="RHOX", interp="RHOX", geom="SPH", lfs_atmo=lfs_atmo
+    )
+    atmo = interpolator.interp_atmo_grid("marcs2014.sav", teff, logg, 0.0)
+    atmo.method = "embedded"
+    linelist = ValdFile(os.path.join(os.path.dirname(__file__), "testcase3.lin"))
+
+    def synthesize(nmu_dyn):
+        sme = SME_Struct()
+        sme.teff, sme.logg, sme.vmic = teff, logg, 2.0
+        sme.vmac, sme.vsini = 0.0, 0.0
+        sme.abund = Abund(monh=0.0, pattern="asplund2009")
+        sme.linelist = linelist
+        sme.atmo = deepcopy(atmo)
+        sme.wran = [[6436.0, 6444.0]]
+        sme.wint = [np.linspace(6436.5, 6443.5, 1401)]
+        sme.vrad_flag = "none"
+        sme.cscale_flag = "none"
+        sme.normalize_by_continuum = False
+        sme.mu_dynamic = True
+        sme.nmu_dyn = nmu_dyn
+        out = Synthesizer().synthesize_spectrum(sme, passNLTE=False)
+        return np.asarray(out.synth[0]), np.asarray(out.cont[0])
+
+    flux_ref, cont_ref = synthesize([40, 37])
+    norm_err, cont_err = [], []
+    for nmu_dyn in CONVERGENCE_NMU_DYN:
+        flux, cont = synthesize(nmu_dyn)
+        norm_err.append(np.max(np.abs(flux / cont - flux_ref / cont_ref)))
+        cont_err.append(np.max(np.abs(cont - cont_ref) / cont_ref))
+
+    default = CONVERGENCE_NMU_DYN.index([15, 15])
+    assert norm_err[default] < 1e-3
+    assert cont_err[default] < 5e-3
+    assert np.all(np.diff(norm_err) < 0)
 
 
 def test_dynamically_update_mu_requires_spherical_geometry():
@@ -952,7 +1083,7 @@ def test_dynamically_update_mu_requires_height_and_radius():
 def test_dynamically_update_mu_computes_valid_mu_list():
     sme = _minimal_sme()
     sme.atmo = _make_dynamic_mu_atmo(ndep=21)
-    sme.mu_num = [5, 4]
+    sme.nmu_dyn = [5, 4]
     synth = Synthesizer(dll=_DummyDLL())
 
     synth.dynamically_update_mu(sme)
@@ -964,10 +1095,10 @@ def test_dynamically_update_mu_computes_valid_mu_list():
     assert np.all(np.diff(mu) <= 0)
 
 
-def test_dynamically_update_mu_propagates_invalid_mu_num():
+def test_dynamically_update_mu_propagates_invalid_nmu_dyn():
     sme = _minimal_sme()
     sme.atmo = _make_dynamic_mu_atmo()
-    sme.mu_num = [0, 10]
+    sme.nmu_dyn = [0, 10]
     synth = Synthesizer(dll=_DummyDLL())
 
     with pytest.raises(ValueError):
@@ -1166,3 +1297,91 @@ def test_flag_strong_lines_by_bins_valid_mask_matches_sliced_call():
     ref[valid_mask] = ref_sub
 
     assert np.array_equal(got, ref)
+
+
+# Continuum-scattering mode 0/1/2 (continuum_scattering_mode).
+def _continuum_scattering_sme_blue(cwd):
+    """Plane-parallel case in a blue window where scattering matters."""
+    sme = _continuum_scattering_sme(cwd, spherical=False)
+    sme.linelist = LineList()
+    sme.linelist.add("Fe 1", 3700.0, 0.9582, -3.047, 7.19, -6.22, 239.249)
+    sme.linelist.add("Cr 2", 3720.0, 4.1682, -2.117, 8.37, -6.49, 195.248)
+    sme.wran = [[3650.0, 3750.0]]
+    sme.wint = [np.linspace(3650.0, 3750.0, 41)]
+    return sme
+
+
+def _synthesize_intensities_with_mode(synth, sme, mode, use_alias=False):
+    one = deepcopy(sme)
+    if use_alias:
+        one.continuum_scattering_source = bool(mode)
+    else:
+        one.continuum_scattering_mode = int(mode)
+    out = synth.synthesize_spectrum(one, passNLTE=False)
+    return (
+        np.asarray(out.wint[0]),
+        np.asarray(out.sint[0]),
+        np.asarray(out.cint[0]),
+    )
+
+
+def test_synthesize_spectrum_passes_integer_scattering_mode():
+    dll = _DummyDLL(transf_wave=np.linspace(5000.0, 5001.0, 5))
+    synth = Synthesizer(dll=dll)
+    sme = _minimal_sme()
+
+    for mode in (0, 1, 2, 0):
+        sme.continuum_scattering_mode = mode
+        synth.synthesize_spectrum(
+            sme,
+            segments=[0],
+            passAtmosphere=False,
+            passNLTE=False,
+        )
+
+    assert dll.continuum_scattering_source_modes == [0, 1, 2, 0]
+
+
+@skipif_smelib
+def test_continuum_scattering_mode_aliases_are_bitwise_identical():
+    sme = _continuum_scattering_sme_blue(os.path.dirname(__file__))
+    synth = Synthesizer()
+
+    default = _synthesize_intensities_with_mode(synth, sme, 0)
+    alias_off = _synthesize_intensities_with_mode(synth, sme, 0, use_alias=True)
+    mode_one = _synthesize_intensities_with_mode(synth, sme, 1)
+    with pytest.warns(DeprecationWarning, match="continuum_scattering_mode = 2"):
+        alias_on = _synthesize_intensities_with_mode(synth, sme, 1, use_alias=True)
+
+    assert all(np.array_equal(left, right) for left, right in zip(default, alias_off))
+    assert all(np.array_equal(left, right) for left, right in zip(mode_one, alias_on))
+
+
+@skipif_smelib
+def test_continuum_scattering_mode_two_runs_and_changes_blue_spectrum():
+    sme = _continuum_scattering_sme_blue(os.path.dirname(__file__))
+    synth = Synthesizer()
+
+    wave_zero, line_zero, cont_zero = _synthesize_intensities_with_mode(synth, sme, 0)
+    wave_two, line_two, cont_two = _synthesize_intensities_with_mode(synth, sme, 2)
+
+    assert np.array_equal(wave_two, wave_zero)
+    assert np.all(np.isfinite(line_two))
+    assert np.all(np.isfinite(cont_two))
+    assert not np.allclose(line_two / cont_two, line_zero / cont_zero, rtol=1e-8, atol=0)
+
+
+def test_mode_two_reports_clear_error_for_old_smelib(monkeypatch):
+    import pysme.sme_synth as sme_synth_module
+
+    class OldSMElib:
+        @staticmethod
+        def SetContinuumScatteringSourceMode(mode):
+            raise RuntimeError("continuum scattering mode must be 0 or 1")
+
+    monkeypatch.setattr(sme_synth_module, "_smelib", OldSMElib())
+    dll = sme_synth_module.SME_DLL.__new__(sme_synth_module.SME_DLL)
+
+    with pytest.raises(RuntimeError, match=r"mode 2 requires SMElib >= 6\.13\.21"):
+        dll.SetContinuumScatteringSourceMode(2)
+

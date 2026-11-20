@@ -19,6 +19,7 @@ from scipy.spatial.distance import cdist
 from . import broadening
 from .atmosphere.atmosphere import AtmosphereError
 from .atmosphere.interpolation import AtmosphereInterpolator
+from .cwrapper import MUSIZE
 from .continuum_and_radial_velocity import (
     apply_radial_velocity_and_continuum,
     match_rv_continuum,
@@ -315,21 +316,33 @@ def _same_path(a, b):
     )
 
 
-def _resolve_mu_num(mu_num):
-    """Validate mu_num and return (non_grazing_number, grazing_number)."""
+def _resolve_nmu_dyn(nmu_dyn):
+    """Validate nmu_dyn and return (non_grazing_number, grazing_number).
+
+    Both counts must be positive integers, and their sum may not exceed
+    MUSIZE, the maximum number of rays SMElib's Transf accepts.
+    """
     try:
-        arr = np.asarray(mu_num, dtype=float).reshape(2)
+        arr = np.asarray(nmu_dyn, dtype=float).reshape(2)
     except (TypeError, ValueError):
         raise ValueError(
-            f"sme.mu_num must be two positive integers when mu_dynamic=True, "
-            f"got {mu_num!r}."
+            f"sme.nmu_dyn must be two positive integers when mu_dynamic=True, "
+            f"got {nmu_dyn!r}."
         )
     if np.any(arr <= 0) or np.any(arr != np.floor(arr)):
         raise ValueError(
-            f"sme.mu_num must be two positive integers when mu_dynamic=True, "
-            f"got {mu_num!r}."
+            f"sme.nmu_dyn must be two positive integers when mu_dynamic=True, "
+            f"got {nmu_dyn!r}."
         )
-    return int(arr[0]), int(arr[1])
+    non_grazing_number, grazing_number = int(arr[0]), int(arr[1])
+    total = non_grazing_number + grazing_number
+    if total > MUSIZE:
+        raise ValueError(
+            f"sme.nmu_dyn={nmu_dyn!r} requests {total} rays in total, but SMElib "
+            f"supports at most {MUSIZE} (MUSIZE). Reduce the number of "
+            f"non-grazing or grazing rays."
+        )
+    return non_grazing_number, grazing_number
 
 
 def _iter_exception_chain(exc):
@@ -597,6 +610,29 @@ class Synthesizer:
         atmo = sme.atmo
 
         if atmo.method == "grid":
+            # ``interp_atmo_grid`` returns a populated Atmosphere while
+            # retaining ``method='grid'`` for backwards compatibility.  If a
+            # caller then replaces ``sme.abund`` with an absolute pattern,
+            # ``sme.monh`` can change even though the already-interpolated
+            # structure should remain fixed.  Refusing the ambiguous state is
+            # safer than silently interpolating the same model a second time at
+            # the abundance pattern's coordinate.  Callers that intentionally
+            # want a new grid model should reset ``atmo.interpolation_monh`` (or
+            # construct a fresh grid Atmosphere); callers that want to keep the
+            # existing structure should set ``atmo.method = 'embedded'``.
+            interpolation_monh = getattr(atmo, "interpolation_monh", None)
+            if interpolation_monh is not None and not np.isclose(
+                float(interpolation_monh), float(sme.monh), rtol=0.0, atol=1e-12
+            ):
+                raise AtmosphereError(
+                    "Atmosphere was already interpolated at [M/H]={:.6g}, but "
+                    "the SME abundance coordinate is [M/H]={:.6g} while "
+                    "atmo.method='grid'. Set atmo.method='embedded' to keep "
+                    "the existing structure, or reset interpolation_monh and "
+                    "explicitly request a new grid interpolation.".format(
+                        float(interpolation_monh), float(sme.monh)
+                    )
+                )
             if self.atmosphere_interpolator is None:
                 self.atmosphere_interpolator = AtmosphereInterpolator(
                     depth=atmo.depth,
@@ -1818,9 +1854,7 @@ class Synthesizer:
         dll.SetLibraryPath()
         _configure_continuum_opacity_grid(dll, sme)
         _configure_adaptive_transfer_grid(dll, sme)
-        dll.SetContinuumScatteringSourceMode(
-            int(sme.continuum_scattering_source)
-        )
+        dll.SetContinuumScatteringSourceMode(sme.continuum_scattering_mode)
         if passLineList:
             line_selection_mask = np.ones(len(sme.linelist), dtype=bool)
             linelist_for_smelib = sme.linelist
@@ -2226,12 +2260,12 @@ class Synthesizer:
           edge of the core.
         - Grazing rays: rays that never reach the bottom of the atmosphere and
           instead turn around (are tangent) somewhere inside it. One grazing
-          ray is placed per selected depth point, with its mu chosen so the
-          ray's tangent point falls reliably between that depth point and the
-          next deeper one.
+          ray is placed per selected depth interval, with its mu chosen so
+          the ray's tangent point falls midway between that depth point and
+          the next deeper one.
 
-        The number of rays in each group is controlled by sme.mu_num
-        (see _resolve_mu_num). This mutates sme.mu in place; it does not
+        The number of rays in each group is controlled by sme.nmu_dyn
+        (see _resolve_nmu_dyn). This mutates sme.mu in place; it does not
         return a value.
 
         Parameters
@@ -2246,8 +2280,10 @@ class Synthesizer:
         AtmosphereError
             If the atmosphere is not spherical, or is missing height/radius.
         ValueError
-            If sme.mu_num does not resolve to two positive integers
-            (see _resolve_mu_num).
+            If sme.nmu_dyn does not resolve to two positive integers, asks
+            for more than MUSIZE rays in total (see _resolve_nmu_dyn), or
+            asks for more grazing rays than the ndep - 2 depth intervals
+            usable as tangent points.
         """
         if sme._atmo.geom != "SPH":
             raise AtmosphereError(
@@ -2261,22 +2297,36 @@ class Synthesizer:
                 "set without providing them)."
             )
 
-        non_grazing_number, grazing_number = _resolve_mu_num(sme.mu_num)
+        non_grazing_number, grazing_number = _resolve_nmu_dyn(sme.nmu_dyn)
 
-        # for non-grazing rays, space out by sqrt as before, up to the bottom of the atmosphere
+        # Grazing tangent points sit in depth intervals 1 to ndep-2 (see below)
+        nr_of_depthpoints = sme._atmo.ndep
+        max_grazing_number = nr_of_depthpoints - 2
+        if grazing_number > max_grazing_number:
+            raise ValueError(
+                f"sme.nmu_dyn requests {grazing_number} grazing rays, but the "
+                f"atmosphere has {nr_of_depthpoints} depth points, which allows at "
+                f"most {max_grazing_number} (one per usable depth interval)."
+            )
+
+        # Non-grazing rays: equal-area spacing between disk center and the core edge
         bottom_of_atmosphere_cm = sme._atmo.height[-1] + sme._atmo.radius
         top_of_atmosphere_cm = sme._atmo.height[0] + sme._atmo.radius
         bottom_of_atmosphere_fraction = bottom_of_atmosphere_cm/top_of_atmosphere_cm
-        edgecase_mu = np.sqrt(1-(bottom_of_atmosphere_fraction-0.01)**2) #round down by 1 percent so this one is in core
+        # Each ray sits mid-annulus, so even the outermost one stays inside the
+        # core: its impact parameter is R_bottom * sqrt(1 - 1/(2n)) < R_bottom.
+        edgecase_mu = np.sqrt(1 - bottom_of_atmosphere_fraction**2)
 
         non_grazing_mus = ( 1 - (1 - edgecase_mu**2) * (2 * np.arange(non_grazing_number) + 1) / (2 * non_grazing_number) ) ** 0.5
 
-        ### For grazing rays, check nr of depthpoints and distribute our rays among them ##
-        nr_of_depthpoints = sme._atmo.ndep
-        # Skip the outermost 1-2 depth points as grazing-ray tangent points: they're
-        # cool enough to contribute little flux, and this range is validated by testing.
-        # Upper bound is ndep-2 (not ndep-1) because depth_indices+1 below must stay in bounds.
-        depth_indices = np.linspace(2, nr_of_depthpoints - 2, grazing_number).astype(int)
+        # Grazing rays: one tangent point per selected depth interval [i, i+1].
+        # Interval 0 is skipped: a ray turning there crosses only the top
+        # layer, and SMElib's TBINTG_sph returns zero intensity for it.
+        # The upper bound ndep-2 keeps i+1 in range. linspace spacing is >= 1
+        # for grazing_number <= ndep-2, so the indices are distinct.
+        depth_indices = np.linspace(
+            1, nr_of_depthpoints - 2, grazing_number
+        ).astype(int)
         grazing_heights = (np.array(sme._atmo.height)[depth_indices] + np.array(sme._atmo.height)[depth_indices+1]) / 2  + sme._atmo.radius
         grazing_mus = np.sqrt(1-(grazing_heights/top_of_atmosphere_cm)**2)
 

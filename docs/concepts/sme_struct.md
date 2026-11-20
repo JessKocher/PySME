@@ -19,7 +19,7 @@ Stellar parameters describe the star in general and are usually what we want to 
 - `vmac`: The macro-turbulence velocity in km s⁻¹. Describes turbulence on scales **larger** than the photon mean free path, also contributing to broadening.
 - `mu`: Limb-angle values ($\mu = \cos\theta$) at which the radiative-transfer calculation is performed. $\mu = 1$ corresponds to disk center, $0$ to the limb.
   - `mu_dynamic`: If `True`, `mu` is recomputed from the atmosphere's depth grid every time the atmosphere is (re)computed, overwriting whatever `mu` was set to. Requires a spherical (SPH) atmosphere; raises an error at synthesis time for plane-parallel (PP) models. Default `False`, in which case `mu` is used exactly as given.
-  - `mu_num`: `[n_non_grazing, n_grazing]` ray counts used when `mu_dynamic` is `True`; ignored (and never validated) when `mu_dynamic` is `False`. Must be two positive integers when actually used, or synthesis raises an error. Default `[10, 10]`.
+  - `nmu_dyn`: `[n_non_grazing, n_grazing]` ray counts used when `mu_dynamic` is `True`; ignored (and never validated) when `mu_dynamic` is `False`. Must be two positive integers with a sum of at most 77 (SMElib's `MUSIZE`), and `n_grazing` at most `ndep - 2`, when actually used, or synthesis raises an error. Default `[15, 15]`.
 
 ## Radial velocity and Continuum
 
@@ -91,10 +91,14 @@ from IDL SME. It is recommend however to use the new variables.
 :cint:
     Continuum specific intensities on `wint`, stored per segment when
     `specific_intensities_only=True`.
+:continuum_scattering_mode:
+    Integer selecting the continuum source used during synthesis for plane-parallel and spherical atmospheres.
+    Mode `0` (the default) uses the Planck source and keeps the historical PySME behavior.
+    Mode `1` uses the deprecated continuum-only scattering source.
+    Mode `2` is the recommended scattering treatment and includes line opacity and emissivity in the source iteration.
 :continuum_scattering_source:
-    Boolean flag controlling whether coherent continuum scattering is included in the continuum source function during synthesis.
-    The default is `False`, which keeps the historical PySME behavior.
-    Set this to `True` to use the opt-in continuum-scattering source treatment for plane-parallel and spherical atmospheres.
+    Deprecated Boolean alias. Setting it to `False` selects mode `0`; setting it to `True` selects mode `1` and emits a deprecation warning.
+    New code should set `continuum_scattering_mode`, normally to `2` when scattering is required.
 
 
 ## Abundance
